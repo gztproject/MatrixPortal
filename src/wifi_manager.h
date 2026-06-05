@@ -3,6 +3,11 @@
 #include <Arduino.h>
 
 bool wifiManagerBegin();
-void wifiManagerResetAndReboot();
-String wifiManagerIp();
-int wifiManagerRssi();
+void wifiManagerForgetSta();
+bool wifiManagerConnectSta(const char *ssid, const char *password);
+String wifiApSsid();
+String wifiApIp();
+bool wifiStaConnected();
+String wifiStaIp();
+int wifiStaRssi();
+void wifiManagerTick();

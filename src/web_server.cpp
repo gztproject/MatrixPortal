@@ -5,10 +5,17 @@
 
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
+#include <FS.h>
+#include <LittleFS.h>
 
 namespace {
 AsyncWebServer server(80);
 DisplayEngine *displayEngine = nullptr;
+PresetStore *presetStore = nullptr;
+
+File uploadFile;
+int uploadPresetId = -1;
+size_t uploadTotalBytes = 0;
 
 uint32_t parseHexColor(const char *hex) {
   if (!hex || hex[0] != '#') {
@@ -17,89 +24,279 @@ uint32_t parseHexColor(const char *hex) {
   return strtoul(hex + 1, nullptr, 16) & 0xFFFFFF;
 }
 
-void configToJson(const SignConfig &cfg, JsonDocument &doc) {
-  doc["text"] = cfg.text;
-  doc["scroll"] = cfg.scroll;
-  doc["scrollDelayMs"] = cfg.scrollDelayMs;
-  doc["brightness"] = cfg.brightness;
-
-  char color[8];
-  snprintf(color, sizeof(color), "#%02X%02X%02X", cfg.colorR, cfg.colorG, cfg.colorB);
-  doc["color"] = color;
-  doc["ip"] = wifiManagerIp();
-  doc["rssi"] = wifiManagerRssi();
+void appendWifiStatus(JsonObject obj) {
+  obj["apSsid"] = wifiApSsid();
+  obj["apIp"] = wifiApIp();
+  obj["staConnected"] = wifiStaConnected();
+  if (wifiStaConnected()) {
+    obj["staIp"] = wifiStaIp();
+    obj["staRssi"] = wifiStaRssi();
+  } else {
+    obj["staIp"] = "";
+    obj["staRssi"] = nullptr;
+  }
 }
 
-bool jsonToConfig(JsonObject obj, SignConfig &cfg) {
+void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
+  obj["text"] = preset.text;
+  obj["scroll"] = preset.scroll;
+  obj["scrollDelayMs"] = preset.scrollDelayMs;
+  obj["brightness"] = preset.brightness;
+
+  char color[8];
+  snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
+  obj["color"] = color;
+  obj["gifPath"] = preset.gifPath;
+  obj["hasGif"] = presetStore->gifExistsForSlot(index);
+}
+
+bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   if (obj["text"].is<const char *>()) {
-    strlcpy(cfg.text, obj["text"], sizeof(cfg.text));
+    strlcpy(preset.text, obj["text"], sizeof(preset.text));
   }
   if (obj["scroll"].is<bool>()) {
-    cfg.scroll = obj["scroll"];
+    preset.scroll = obj["scroll"];
   }
   if (obj["scrollDelayMs"].is<uint16_t>()) {
-    cfg.scrollDelayMs = obj["scrollDelayMs"];
+    preset.scrollDelayMs = obj["scrollDelayMs"];
   } else if (obj["scrollDelayMs"].is<int>()) {
-    cfg.scrollDelayMs = static_cast<uint16_t>(obj["scrollDelayMs"].as<int>());
+    preset.scrollDelayMs = static_cast<uint16_t>(obj["scrollDelayMs"].as<int>());
   }
   if (obj["brightness"].is<uint8_t>()) {
-    cfg.brightness = obj["brightness"];
+    preset.brightness = obj["brightness"];
   } else if (obj["brightness"].is<int>()) {
-    cfg.brightness = static_cast<uint8_t>(obj["brightness"].as<int>());
+    preset.brightness = static_cast<uint8_t>(obj["brightness"].as<int>());
   }
   if (obj["color"].is<const char *>()) {
     const uint32_t rgb = parseHexColor(obj["color"]);
-    cfg.colorR = (rgb >> 16) & 0xFF;
-    cfg.colorG = (rgb >> 8) & 0xFF;
-    cfg.colorB = rgb & 0xFF;
+    preset.colorR = (rgb >> 16) & 0xFF;
+    preset.colorG = (rgb >> 8) & 0xFF;
+    preset.colorB = rgb & 0xFF;
   }
   return true;
 }
+
+int parsePresetIdFromUrl(const String &url) {
+  const int presetsPos = url.indexOf("/api/presets/");
+  if (presetsPos < 0) {
+    return -1;
+  }
+  const int start = presetsPos + 13;
+  if (start >= static_cast<int>(url.length())) {
+    return -1;
+  }
+  const int slash = url.indexOf('/', start);
+  const String idStr = slash >= 0 ? url.substring(start, slash) : url.substring(start);
+  const int id = idStr.toInt();
+  if (id < 0 || id >= PRESET_COUNT) {
+    return -1;
+  }
+  return id;
+}
+
+void sendPresetsJson(AsyncWebServerRequest *request) {
+  JsonDocument doc;
+  doc["activeIndex"] = presetStore->activeIndex();
+  JsonArray arr = doc["presets"].to<JsonArray>();
+  for (int i = 0; i < PRESET_COUNT; i++) {
+    JsonObject item = arr.add<JsonObject>();
+    presetToJson(presetStore->get(i), item, i);
+  }
+  appendWifiStatus(doc.to<JsonObject>());
+
+  String body;
+  serializeJson(doc, body);
+  request->send(200, "application/json", body);
+}
 }  // namespace
 
-void webServerBegin(DisplayEngine &engine) {
+void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   displayEngine = &engine;
+  presetStore = &store;
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", WEB_UI_HTML);
   });
 
+  server.on("/api/presets", HTTP_GET, [](AsyncWebServerRequest *request) {
+    sendPresetsJson(request);
+  });
+
+  server.on("/api/presets", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len == total) {
+                JsonDocument doc;
+                if (deserializeJson(doc, data, len)) {
+                  request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                  return;
+                }
+                const int id = doc["id"] | presetStore->activeIndex();
+                if (id < 0 || id >= PRESET_COUNT) {
+                  request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+                  return;
+                }
+                SignPreset preset = presetStore->get(id);
+                if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
+                  request->send(400, "application/json", "{\"error\":\"invalid preset\"}");
+                  return;
+                }
+                displayEngine->applyPreset(preset, id);
+                request->send(200, "application/json", "{\"ok\":true}");
+              }
+            });
+
+  server.on("/api/presets/select", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int id = doc["id"] | -1;
+              if (id < 0 || id >= PRESET_COUNT) {
+                request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+                return;
+              }
+              displayEngine->selectPreset(id);
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    const SignPreset preset = displayEngine->activePreset();
     JsonDocument doc;
-    configToJson(displayEngine->getConfig(), doc);
+    doc["text"] = preset.text;
+    doc["scroll"] = preset.scroll;
+    doc["scrollDelayMs"] = preset.scrollDelayMs;
+    doc["brightness"] = preset.brightness;
+    char color[8];
+    snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
+    doc["color"] = color;
+    doc["activeIndex"] = displayEngine->activeIndex();
+    appendWifiStatus(doc.to<JsonObject>());
+
     String body;
     serializeJson(doc, body);
     request->send(200, "application/json", body);
   });
 
-  server.on(
-    "/api/config",
-    HTTP_POST,
-    [](AsyncWebServerRequest *request) {},
-    nullptr,
-    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      JsonDocument doc;
-      const DeserializationError err = deserializeJson(doc, data, len);
-      if (err) {
-        request->send(400, "application/json", "{\"error\":\"invalid json\"}");
-        return;
-      }
-
-      SignConfig cfg = displayEngine->getConfig();
-      if (!jsonToConfig(doc.as<JsonObject>(), cfg)) {
-        request->send(400, "application/json", "{\"error\":\"invalid config\"}");
-        return;
-      }
-
-      displayEngine->applyConfig(cfg);
-      request->send(200, "application/json", "{\"ok\":true}");
-    });
+  server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              SignPreset preset = displayEngine->activePreset();
+              if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
+                request->send(400, "application/json", "{\"error\":\"invalid config\"}");
+                return;
+              }
+              displayEngine->applyPreset(preset, displayEngine->activeIndex());
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
 
   server.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
-    request->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    delay(200);
-    wifiManagerResetAndReboot();
+    wifiManagerForgetSta();
+    request->send(200, "application/json", "{\"ok\":true}");
   });
+
+  server.on("/api/wifi/connect", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const char *ssid = doc["ssid"] | "";
+              const char *password = doc["password"] | "";
+              if (ssid[0] == '\0') {
+                request->send(400, "application/json", "{\"error\":\"ssid required\"}");
+                return;
+              }
+              wifiManagerConnectSta(ssid, password);
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/presets/gif", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    const int id = request->hasParam("id") ? request->getParam("id")->value().toInt() : -1;
+    if (id < 0 || id >= PRESET_COUNT) {
+      request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+      return;
+    }
+    const String path = presetStore->gifPathForSlot(id);
+    if (LittleFS.exists(path)) {
+      LittleFS.remove(path);
+    }
+    SignPreset preset = presetStore->get(id);
+    preset.gifPath[0] = '\0';
+    path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
+    displayEngine->applyPreset(preset, id);
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on(
+      "/api/presets/gif",
+      HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {
+          request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+          return;
+        }
+        if (uploadTotalBytes > MAX_GIF_BYTES) {
+          const String path = presetStore->gifPathForSlot(uploadPresetId);
+          if (LittleFS.exists(path)) {
+            LittleFS.remove(path);
+          }
+          request->send(413, "application/json", "{\"error\":\"gif too large (max 256KB)\"}");
+          return;
+        }
+        SignPreset preset = presetStore->get(uploadPresetId);
+        const String path = presetStore->gifPathForSlot(uploadPresetId);
+        path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
+        displayEngine->applyPreset(preset, uploadPresetId);
+        request->send(200, "application/json", "{\"ok\":true}");
+      },
+      [](AsyncWebServerRequest *request, const String &filename, size_t index, uint8_t *data, size_t len,
+         bool final) {
+        if (index == 0) {
+          uploadPresetId = request->hasParam("id") ? request->getParam("id")->value().toInt() : -1;
+          uploadTotalBytes = 0;
+          if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {
+            return;
+          }
+          const String path = presetStore->gifPathForSlot(uploadPresetId);
+          if (LittleFS.exists(path)) {
+            LittleFS.remove(path);
+          }
+          uploadFile = LittleFS.open(path, "w");
+        }
+
+        if (!uploadFile) {
+          return;
+        }
+
+        uploadTotalBytes += len;
+        if (uploadTotalBytes > MAX_GIF_BYTES) {
+          uploadFile.close();
+          const String path = presetStore->gifPathForSlot(uploadPresetId);
+          LittleFS.remove(path);
+          return;
+        }
+
+        uploadFile.write(data, len);
+        if (final) {
+          uploadFile.close();
+        }
+      });
 
   server.begin();
   Serial.println("Web server started on port 80");

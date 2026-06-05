@@ -1,112 +1,97 @@
 #include "display_engine.h"
 
+#include "gif_player.h"
 #include "panel_profile.h"
-
-#include <Preferences.h>
-#include <cstring>
 
 namespace {
 constexpr int kTextY = 18;
 constexpr int kTextSize = 2;
 constexpr int kTextBandTop = 4;
 constexpr int kTextBandHeight = 20;
-constexpr uint8_t kDefaultBrightness = 10;
-
-void setDefaults(SignConfig &cfg) {
-  strncpy(cfg.text, "MatrixPortal", sizeof(cfg.text) - 1);
-  cfg.text[sizeof(cfg.text) - 1] = '\0';
-  cfg.scroll = true;
-  cfg.scrollDelayMs = 40;
-  cfg.brightness = kDefaultBrightness;
-  cfg.colorR = 255;
-  cfg.colorG = 255;
-  cfg.colorB = 255;
-}
+constexpr unsigned long kFlashMs = 400;
 }  // namespace
 
-void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma) {
+void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store) {
   panel_ = panel;
   dma_ = dma;
-  loadFromNvs();
-  applyBrightness();
-  scrollOffset_ = PANEL_RES_X;
-  dirty_ = true;
+  store_ = store;
+  gifPlayerBegin(panel_);
+  selectPreset(store_->activeIndex());
 }
 
-void DisplayEngine::loadFromNvs() {
-  setDefaults(config_);
+int DisplayEngine::activeIndex() const {
+  return store_ ? store_->activeIndex() : 0;
+}
 
-  Preferences prefs;
-  if (!prefs.begin("sign", true)) {
+SignPreset DisplayEngine::activePreset() const {
+  return runtime_;
+}
+
+void DisplayEngine::selectPreset(int index) {
+  if (!store_) {
     return;
   }
-
-  String text = prefs.getString("text", config_.text);
-  text.toCharArray(config_.text, sizeof(config_.text));
-  config_.scroll = prefs.getBool("scroll", config_.scroll);
-  config_.scrollDelayMs = prefs.getUShort("scrollMs", config_.scrollDelayMs);
-  config_.brightness = prefs.getUChar("bright", config_.brightness);
-  config_.colorR = prefs.getUChar("colorR", config_.colorR);
-  config_.colorG = prefs.getUChar("colorG", config_.colorG);
-  config_.colorB = prefs.getUChar("colorB", config_.colorB);
-  prefs.end();
+  store_->setActiveIndex(index);
+  applyActivePreset();
+  showPresetFlash(index);
 }
 
-void DisplayEngine::saveToNvs() {
-  Preferences prefs;
-  if (!prefs.begin("sign", false)) {
+void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persist) {
+  if (!store_ || index < 0 || index >= PRESET_COUNT) {
     return;
   }
-
-  prefs.putString("text", config_.text);
-  prefs.putBool("scroll", config_.scroll);
-  prefs.putUShort("scrollMs", config_.scrollDelayMs);
-  prefs.putUChar("bright", config_.brightness);
-  prefs.putUChar("colorR", config_.colorR);
-  prefs.putUChar("colorG", config_.colorG);
-  prefs.putUChar("colorB", config_.colorB);
-  prefs.end();
+  store_->set(index, preset);
+  if (index == activeIndex()) {
+    applyActivePreset();
+  }
 }
 
-SignConfig DisplayEngine::getConfig() const {
-  return config_;
-}
-
-void DisplayEngine::applyConfig(const SignConfig &cfg, bool persist) {
-  config_ = cfg;
-  if (config_.text[0] == '\0') {
-    setDefaults(config_);
+void DisplayEngine::applyActivePreset() {
+  runtime_ = store_->get(activeIndex());
+  if (runtime_.scrollDelayMs < 10) {
+    runtime_.scrollDelayMs = 10;
   }
-  if (config_.scrollDelayMs < 10) {
-    config_.scrollDelayMs = 10;
-  }
-  if (config_.brightness > 100) {
-    config_.brightness = 100;
+  if (runtime_.brightness > 100) {
+    runtime_.brightness = 100;
   }
 
-  applyBrightness();
+  applyBrightness(runtime_.brightness);
+  gifPlayerClose();
   scrollOffset_ = PANEL_RES_X;
   dirty_ = true;
 
-  if (persist) {
-    saveToNvs();
+  const String slotPath = store_->gifPathForSlot(activeIndex());
+  slotPath.toCharArray(runtime_.gifPath, sizeof(runtime_.gifPath));
+
+  gifMode_ = shouldPlayGif(runtime_);
+  if (gifMode_) {
+    if (!gifPlayerOpen(runtime_.gifPath)) {
+      gifMode_ = false;
+    }
   }
 }
 
-void DisplayEngine::applyBrightness() {
+bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
+  if (preset.gifPath[0] == '\0') {
+    return false;
+  }
+  return gifPlayerFileExists(preset.gifPath);
+}
+
+void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   if (!dma_) {
     return;
   }
-  const uint8_t level = (255U * config_.brightness) / 100U;
+  const uint8_t level = (255U * brightnessPercent) / 100U;
   dma_->setBrightness8(level);
 }
 
-int DisplayEngine::textPixelWidth() const {
-  return static_cast<int>(strlen(config_.text)) * 6 * kTextSize;
+int DisplayEngine::textPixelWidth(const SignPreset &preset) const {
+  return static_cast<int>(strlen(preset.text)) * 6 * kTextSize;
 }
 
-uint16_t DisplayEngine::textColor565() const {
-  return panel_->color565(config_.colorR, config_.colorG, config_.colorB);
+uint16_t DisplayEngine::textColor565(const SignPreset &preset) const {
+  return panel_->color565(preset.colorR, preset.colorG, preset.colorB);
 }
 
 void DisplayEngine::redrawTextBand() {
@@ -117,28 +102,40 @@ void DisplayEngine::redrawTextBand() {
   panel_->fillRect(0, kTextBandTop, PANEL_RES_X, kTextBandHeight, 0);
   panel_->setTextSize(kTextSize);
   panel_->setTextWrap(false);
-  panel_->setTextColor(textColor565());
+  panel_->setTextColor(textColor565(runtime_));
 
-  if (config_.scroll) {
+  if (runtime_.scroll) {
     panel_->setCursor(scrollOffset_, kTextY);
   } else {
     panel_->setCursor(4, kTextY);
   }
-  panel_->print(config_.text);
+  panel_->print(runtime_.text);
 }
 
-void DisplayEngine::tick() {
+void DisplayEngine::showPresetFlash(int index) {
   if (!panel_) {
     return;
   }
+  flashIndex_ = index;
+  flashUntilMs_ = millis() + kFlashMs;
+  panel_->fillScreen(0);
+  panel_->setTextSize(1);
+  panel_->setTextWrap(false);
+  panel_->setTextColor(panel_->color565(180, 180, 180));
+  panel_->setCursor(36, 24);
+  panel_->print(index + 1);
+  panel_->print('/');
+  panel_->print(PRESET_COUNT);
+}
 
+void DisplayEngine::tickText(const SignPreset &preset) {
   const unsigned long now = millis();
 
-  if (config_.scroll) {
-    if (now - lastScrollMs_ >= config_.scrollDelayMs) {
+  if (preset.scroll) {
+    if (now - lastScrollMs_ >= preset.scrollDelayMs) {
       lastScrollMs_ = now;
       scrollOffset_--;
-      const int textWidth = textPixelWidth();
+      const int textWidth = textPixelWidth(preset);
       if (scrollOffset_ < -textWidth) {
         scrollOffset_ = PANEL_RES_X;
       }
@@ -151,5 +148,32 @@ void DisplayEngine::tick() {
   if (dirty_) {
     redrawTextBand();
     dirty_ = false;
+  }
+}
+
+void DisplayEngine::tickGif(const SignPreset &preset) {
+  (void)preset;
+  gifPlayerTick();
+}
+
+void DisplayEngine::tick() {
+  if (!panel_ || !store_) {
+    return;
+  }
+
+  if (flashUntilMs_ > 0 && millis() < flashUntilMs_) {
+    return;
+  }
+
+  if (flashUntilMs_ > 0 && millis() >= flashUntilMs_) {
+    flashUntilMs_ = 0;
+    flashIndex_ = -1;
+    applyActivePreset();
+  }
+
+  if (gifMode_) {
+    tickGif(runtime_);
+  } else {
+    tickText(runtime_);
   }
 }

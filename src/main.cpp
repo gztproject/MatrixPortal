@@ -1,11 +1,28 @@
 #include <Arduino.h>
 
+#include "button_input.h"
 #include "display_engine.h"
 #include "panel_profile.h"
+#include "preset_store.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 
+#include <FS.h>
+#include <LittleFS.h>
+
+PresetStore presetStore;
 DisplayEngine displayEngine;
+
+bool initFilesystem() {
+  if (!LittleFS.begin(true)) {
+    Serial.println("LittleFS mount failed");
+    return false;
+  }
+  if (!LittleFS.exists("/gif")) {
+    LittleFS.mkdir("/gif");
+  }
+  return true;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -19,16 +36,24 @@ void setup() {
     }
   }
 
-  displayEngine.begin(panelProfileVirtual(), panelProfileDma());
-
-  if (!wifiManagerBegin()) {
-    return;
+  if (!initFilesystem()) {
+    Serial.println("Filesystem init failed");
   }
 
-  webServerBegin(displayEngine);
-  Serial.println("Ready — open http://matrixsign.local or device IP");
+  presetStore.begin();
+  displayEngine.begin(panelProfileVirtual(), panelProfileDma(), &presetStore);
+  buttonInputBegin(&displayEngine);
+
+  if (!wifiManagerBegin()) {
+    Serial.println("Wi-Fi init failed");
+  }
+
+  webServerBegin(displayEngine, presetStore);
+  Serial.println("Ready — connect to MatrixSign, open http://192.168.4.1");
 }
 
 void loop() {
+  wifiManagerTick();
+  buttonInputTick();
   displayEngine.tick();
 }

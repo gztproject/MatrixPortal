@@ -1,55 +1,102 @@
 #include "wifi_manager.h"
 
-#include <ESPmDNS.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 
 namespace {
-constexpr char kApName[] = "MatrixSign-Setup";
-constexpr char kHostname[] = "matrixsign";
+constexpr char kApSsid[] = "MatrixSign";
+const IPAddress kApIp(192, 168, 4, 1);
+const IPAddress kApGateway(192, 168, 4, 1);
+const IPAddress kApNetmask(255, 255, 255, 0);
+
+bool staAttemptStarted = false;
+unsigned long staAttemptStartMs = 0;
+constexpr unsigned long kStaAttemptTimeoutMs = 30000;
 }  // namespace
 
 bool wifiManagerBegin() {
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
+  WiFi.persistent(true);
 
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);
-  wm.setConnectTimeout(30);
-
-  Serial.printf("Connecting to Wi-Fi (portal AP: %s)...\n", kApName);
-  const bool connected = wm.autoConnect(kApName);
-
-  if (!connected) {
-    Serial.println("Wi-Fi connect failed, restarting...");
-    delay(3000);
-    ESP.restart();
+  if (!WiFi.softAPConfig(kApIp, kApGateway, kApNetmask)) {
+    Serial.println("SoftAP config failed");
     return false;
   }
 
-  Serial.printf("Wi-Fi connected: %s\n", WiFi.SSID().c_str());
-  Serial.printf("IP address: %s\n", WiFi.localIP().toString().c_str());
+  if (!WiFi.softAP(kApSsid)) {
+    Serial.println("SoftAP start failed");
+    return false;
+  }
 
-  if (MDNS.begin(kHostname)) {
-    Serial.printf("mDNS: http://%s.local\n", kHostname);
-  } else {
-    Serial.println("mDNS init failed");
+  Serial.printf("AP: %s  http://%s\n", kApSsid, wifiApIp().c_str());
+
+  WiFiManager wm;
+  if (wm.getWiFiIsSaved()) {
+    WiFi.begin();
+    staAttemptStarted = true;
+    staAttemptStartMs = millis();
+    Serial.println("Attempting saved home Wi-Fi in background...");
   }
 
   return true;
 }
 
-void wifiManagerResetAndReboot() {
-  WiFiManager wm;
-  wm.resetSettings();
-  delay(500);
-  ESP.restart();
+void wifiManagerTick() {
+  if (!staAttemptStarted || WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED && staAttemptStarted) {
+      Serial.printf("Home Wi-Fi connected: %s\n", WiFi.localIP().toString().c_str());
+      staAttemptStarted = false;
+    }
+    return;
+  }
+  if (millis() - staAttemptStartMs > kStaAttemptTimeoutMs) {
+    staAttemptStarted = false;
+    WiFi.disconnect(true);
+    Serial.println("Home Wi-Fi connect timed out");
+  }
 }
 
-String wifiManagerIp() {
+void wifiManagerForgetSta() {
+  WiFiManager wm;
+  wm.resetSettings();
+  WiFi.disconnect(true, true);
+  staAttemptStarted = false;
+}
+
+bool wifiManagerConnectSta(const char *ssid, const char *password) {
+  if (!ssid || ssid[0] == '\0') {
+    return false;
+  }
+
+  WiFi.begin(ssid, password ? password : "");
+  staAttemptStarted = true;
+  staAttemptStartMs = millis();
+  return true;
+}
+
+String wifiApSsid() {
+  return String(kApSsid);
+}
+
+String wifiApIp() {
+  return WiFi.softAPIP().toString();
+}
+
+bool wifiStaConnected() {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+String wifiStaIp() {
+  if (!wifiStaConnected()) {
+    return String();
+  }
   return WiFi.localIP().toString();
 }
 
-int wifiManagerRssi() {
+int wifiStaRssi() {
+  if (!wifiStaConnected()) {
+    return 0;
+  }
   return WiFi.RSSI();
 }
