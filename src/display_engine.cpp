@@ -4,10 +4,11 @@
 #include "panel_profile.h"
 
 namespace {
-constexpr int kTextY = 18;
 constexpr int kTextSize = 2;
-constexpr int kTextBandTop = 4;
-constexpr int kTextBandHeight = 20;
+constexpr int kTextPixelHeight = 8 * kTextSize;
+constexpr int kTextTop = (PANEL_RES_Y - kTextPixelHeight) / 2;
+constexpr int kTextBandTop = kTextTop;
+constexpr int kTextBandHeight = kTextPixelHeight;
 constexpr unsigned long kFlashMs = 400;
 }  // namespace
 
@@ -69,6 +70,10 @@ void DisplayEngine::applyActivePreset() {
       gifMode_ = false;
     }
   }
+
+  if (!gifMode_) {
+    panel_->fillScreen(0);
+  }
 }
 
 bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
@@ -105,9 +110,9 @@ void DisplayEngine::redrawTextBand() {
   panel_->setTextColor(textColor565(runtime_));
 
   if (runtime_.scroll) {
-    panel_->setCursor(scrollOffset_, kTextY);
+    panel_->setCursor(scrollOffset_, kTextTop);
   } else {
-    panel_->setCursor(4, kTextY);
+    panel_->setCursor(4, kTextTop);
   }
   panel_->print(runtime_.text);
 }
