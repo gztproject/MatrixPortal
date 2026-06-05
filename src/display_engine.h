@@ -18,24 +18,39 @@ class DisplayEngine {
   void tick();
 
  private:
+  struct TextLayout {
+    int blockTop = 0;
+    int blockHeight = 0;
+    int textSize = 1;
+    int rowCount = 1;
+    int rowY[4]{};
+  };
+
   void applyActivePreset();
+  void resolveActiveContentType();
   void applyBrightness(uint8_t brightnessPercent);
-  void redrawTextBand();
-  int textPixelWidth(const SignPreset &preset) const;
+  TextLayout computeTextLayout(const SignPreset &preset) const;
+  int splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const;
+  int textBlockPixelWidth(const SignPreset &preset, const TextLayout &layout,
+                          char lines[][201], int lineCount) const;
   uint16_t textColor565(const SignPreset &preset) const;
+  void redrawTextBlock();
   void showPresetFlash(int index);
   void tickText(const SignPreset &preset);
   void tickGif(const SignPreset &preset);
+  void tickEffect(const SignPreset &preset);
   bool shouldPlayGif(const SignPreset &preset) const;
 
   VirtualMatrixPanel *panel_ = nullptr;
   MatrixPanel_I2S_DMA *dma_ = nullptr;
   PresetStore *store_ = nullptr;
   SignPreset runtime_{};
+  ContentType activeContentType_ = ContentType::Text;
+  TextLayout textLayout_{};
+  char textLines_[4][201]{};
+  int textLineCount_ = 0;
   int scrollOffset_ = 0;
   unsigned long lastScrollMs_ = 0;
   bool dirty_ = true;
-  bool gifMode_ = false;
   unsigned long flashUntilMs_ = 0;
-  int flashIndex_ = -1;
 };

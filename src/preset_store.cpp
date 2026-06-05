@@ -1,5 +1,7 @@
 #include "preset_store.h"
 
+#include "effect_renderer.h"
+
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <LittleFS.h>
@@ -11,7 +13,67 @@ constexpr char kNs[] = "presets";
 constexpr uint8_t kDefaultBrightness = 10;
 }  // namespace
 
+const char *contentTypeToString(ContentType type) {
+  switch (type) {
+    case ContentType::Gif:
+      return "gif";
+    case ContentType::Effect:
+      return "effect";
+    case ContentType::Text:
+    default:
+      return "text";
+  }
+}
+
+ContentType contentTypeFromString(const char *value) {
+  if (!value) {
+    return ContentType::Text;
+  }
+  if (strcmp(value, "gif") == 0) {
+    return ContentType::Gif;
+  }
+  if (strcmp(value, "effect") == 0) {
+    return ContentType::Effect;
+  }
+  return ContentType::Text;
+}
+
+const char *fontScaleToString(FontScale scale) {
+  switch (scale) {
+    case FontScale::Quarter:
+      return "quarter";
+    case FontScale::Half:
+      return "half";
+    case FontScale::ThreeQuarter:
+      return "three_quarter";
+    case FontScale::Full:
+      return "full";
+    default:
+      return "half";
+  }
+}
+
+FontScale fontScaleFromString(const char *value) {
+  if (!value) {
+    return FontScale::Half;
+  }
+  if (strcmp(value, "quarter") == 0) {
+    return FontScale::Quarter;
+  }
+  if (strcmp(value, "three_quarter") == 0) {
+    return FontScale::ThreeQuarter;
+  }
+  if (strcmp(value, "full") == 0) {
+    return FontScale::Full;
+  }
+  return FontScale::Half;
+}
+
 void PresetStore::setDefaults(SignPreset &preset) const {
+  preset.contentType = ContentType::Text;
+  preset.effectId = 0;
+  preset.fontScale = FontScale::Half;
+  preset.rowCount = 1;
   strncpy(preset.text, "MatrixPortal", sizeof(preset.text) - 1);
   preset.text[sizeof(preset.text) - 1] = '\0';
   preset.scroll = true;
@@ -116,6 +178,24 @@ void PresetStore::loadAll() {
     if (doc["gifPath"].is<const char *>()) {
       strlcpy(preset.gifPath, doc["gifPath"], sizeof(preset.gifPath));
     }
+    if (doc["contentType"].is<const char *>()) {
+      preset.contentType = contentTypeFromString(doc["contentType"]);
+    }
+    if (doc["effectId"].is<const char *>()) {
+      preset.effectId = static_cast<uint8_t>(effectIdFromString(doc["effectId"]));
+    } else if (doc["effectId"].is<int>()) {
+      preset.effectId = static_cast<uint8_t>(doc["effectId"].as<int>());
+    }
+    if (doc["fontScale"].is<const char *>()) {
+      preset.fontScale = fontScaleFromString(doc["fontScale"]);
+    }
+    preset.rowCount = doc["rowCount"] | preset.rowCount;
+    if (preset.rowCount < 1) {
+      preset.rowCount = 1;
+    }
+    if (preset.rowCount > 4) {
+      preset.rowCount = 4;
+    }
     presets_[i] = preset;
   }
 
@@ -128,6 +208,10 @@ void PresetStore::savePreset(int index) {
   }
 
   JsonDocument doc;
+  doc["contentType"] = contentTypeToString(presets_[index].contentType);
+  doc["effectId"] = effectIdToString(static_cast<EffectId>(presets_[index].effectId));
+  doc["fontScale"] = fontScaleToString(presets_[index].fontScale);
+  doc["rowCount"] = presets_[index].rowCount;
   doc["text"] = presets_[index].text;
   doc["scroll"] = presets_[index].scroll;
   doc["scrollDelayMs"] = presets_[index].scrollDelayMs;

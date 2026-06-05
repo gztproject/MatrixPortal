@@ -1,15 +1,37 @@
 #include "display_engine.h"
 
+#include "effect_renderer.h"
 #include "gif_player.h"
 #include "panel_profile.h"
 
+#include <cstring>
+
 namespace {
-constexpr int kTextSize = 2;
-constexpr int kTextPixelHeight = 8 * kTextSize;
-constexpr int kTextTop = (PANEL_RES_Y - kTextPixelHeight) / 2;
-constexpr int kTextBandTop = kTextTop;
-constexpr int kTextBandHeight = kTextPixelHeight;
 constexpr unsigned long kFlashMs = 400;
+
+int blockHeightForScale(FontScale scale) {
+  switch (scale) {
+    case FontScale::Quarter:
+      return PANEL_RES_Y / 4;
+    case FontScale::Half:
+      return PANEL_RES_Y / 2;
+    case FontScale::ThreeQuarter:
+      return (PANEL_RES_Y * 3) / 4;
+    case FontScale::Full:
+    default:
+      return PANEL_RES_Y;
+  }
+}
+
+int clampInt(int value, int minValue, int maxValue) {
+  if (value < minValue) {
+    return minValue;
+  }
+  if (value > maxValue) {
+    return maxValue;
+  }
+  return value;
+}
 }  // namespace
 
 void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store) {
@@ -17,6 +39,7 @@ void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, P
   dma_ = dma;
   store_ = store;
   gifPlayerBegin(panel_);
+  effectRendererBegin(panel_);
   selectPreset(store_->activeIndex());
 }
 
@@ -41,10 +64,32 @@ void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persis
   if (!store_ || index < 0 || index >= PRESET_COUNT) {
     return;
   }
-  store_->set(index, preset);
+
+  SignPreset normalized = preset;
+  if (normalized.rowCount < 1) {
+    normalized.rowCount = 1;
+  }
+  if (normalized.rowCount > 4) {
+    normalized.rowCount = 4;
+  }
+
+  store_->set(index, normalized);
   if (index == activeIndex()) {
     applyActivePreset();
   }
+}
+
+void DisplayEngine::resolveActiveContentType() {
+  if (runtime_.contentType == ContentType::Effect &&
+      static_cast<EffectId>(runtime_.effectId) != EffectId::None) {
+    activeContentType_ = ContentType::Effect;
+    return;
+  }
+  if (runtime_.contentType == ContentType::Gif && shouldPlayGif(runtime_)) {
+    activeContentType_ = ContentType::Gif;
+    return;
+  }
+  activeContentType_ = ContentType::Text;
 }
 
 void DisplayEngine::applyActivePreset() {
@@ -55,6 +100,12 @@ void DisplayEngine::applyActivePreset() {
   if (runtime_.brightness > 100) {
     runtime_.brightness = 100;
   }
+  if (runtime_.rowCount < 1) {
+    runtime_.rowCount = 1;
+  }
+  if (runtime_.rowCount > 4) {
+    runtime_.rowCount = 4;
+  }
 
   applyBrightness(runtime_.brightness);
   gifPlayerClose();
@@ -64,16 +115,25 @@ void DisplayEngine::applyActivePreset() {
   const String slotPath = store_->gifPathForSlot(activeIndex());
   slotPath.toCharArray(runtime_.gifPath, sizeof(runtime_.gifPath));
 
-  gifMode_ = shouldPlayGif(runtime_);
-  if (gifMode_) {
+  resolveActiveContentType();
+
+  panel_->fillScreen(0);
+
+  if (activeContentType_ == ContentType::Effect) {
+    effectRendererApply(static_cast<EffectId>(runtime_.effectId));
+    return;
+  }
+
+  if (activeContentType_ == ContentType::Gif) {
     if (!gifPlayerOpen(runtime_.gifPath)) {
-      gifMode_ = false;
+      activeContentType_ = ContentType::Text;
+    } else {
+      return;
     }
   }
 
-  if (!gifMode_) {
-    panel_->fillScreen(0);
-  }
+  textLayout_ = computeTextLayout(runtime_);
+  textLineCount_ = splitTextLines(runtime_, textLines_, runtime_.rowCount);
 }
 
 bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
@@ -91,37 +151,83 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   dma_->setBrightness8(level);
 }
 
-int DisplayEngine::textPixelWidth(const SignPreset &preset) const {
-  return static_cast<int>(strlen(preset.text)) * 6 * kTextSize;
+DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &preset) const {
+  TextLayout layout;
+  layout.rowCount = clampInt(preset.rowCount, 1, 4);
+  layout.blockHeight = blockHeightForScale(preset.fontScale);
+  layout.blockTop = (PANEL_RES_Y - layout.blockHeight) / 2;
+  const int lineHeight = layout.blockHeight / layout.rowCount;
+  layout.textSize = clampInt(lineHeight / 8, 1, 6);
+
+  const int glyphHeight = 8 * layout.textSize;
+  for (int i = 0; i < layout.rowCount; i++) {
+    layout.rowY[i] = layout.blockTop + i * lineHeight + (lineHeight - glyphHeight) / 2;
+  }
+  return layout;
+}
+
+int DisplayEngine::splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const {
+  int count = 0;
+  const char *cursor = preset.text;
+
+  while (*cursor && count < maxLines) {
+    const char *next = strchr(cursor, '\n');
+    const size_t len = next ? static_cast<size_t>(next - cursor) : strlen(cursor);
+    const size_t copyLen = len < 200 ? len : 200;
+    memcpy(lines[count], cursor, copyLen);
+    lines[count][copyLen] = '\0';
+    count++;
+    if (!next) {
+      break;
+    }
+    cursor = next + 1;
+  }
+
+  if (count == 0) {
+    lines[0][0] = '\0';
+    count = 1;
+  }
+  return count;
+}
+
+int DisplayEngine::textBlockPixelWidth(const SignPreset &preset, const TextLayout &layout,
+                                       char lines[][201], int lineCount) const {
+  int maxWidth = 0;
+  for (int i = 0; i < lineCount; i++) {
+    const int width = static_cast<int>(strlen(lines[i])) * 6 * layout.textSize;
+    if (width > maxWidth) {
+      maxWidth = width;
+    }
+  }
+  (void)preset;
+  return maxWidth;
 }
 
 uint16_t DisplayEngine::textColor565(const SignPreset &preset) const {
   return panel_->color565(preset.colorR, preset.colorG, preset.colorB);
 }
 
-void DisplayEngine::redrawTextBand() {
+void DisplayEngine::redrawTextBlock() {
   if (!panel_) {
     return;
   }
 
-  panel_->fillRect(0, kTextBandTop, PANEL_RES_X, kTextBandHeight, 0);
-  panel_->setTextSize(kTextSize);
+  panel_->fillRect(0, textLayout_.blockTop, PANEL_RES_X, textLayout_.blockHeight, 0);
+  panel_->setTextSize(textLayout_.textSize);
   panel_->setTextWrap(false);
   panel_->setTextColor(textColor565(runtime_));
 
-  if (runtime_.scroll) {
-    panel_->setCursor(scrollOffset_, kTextTop);
-  } else {
-    panel_->setCursor(4, kTextTop);
+  const int x = runtime_.scroll ? scrollOffset_ : 4;
+  for (int i = 0; i < textLineCount_; i++) {
+    panel_->setCursor(x, textLayout_.rowY[i]);
+    panel_->print(textLines_[i]);
   }
-  panel_->print(runtime_.text);
 }
 
 void DisplayEngine::showPresetFlash(int index) {
   if (!panel_) {
     return;
   }
-  flashIndex_ = index;
   flashUntilMs_ = millis() + kFlashMs;
   panel_->fillScreen(0);
   panel_->setTextSize(1);
@@ -140,7 +246,7 @@ void DisplayEngine::tickText(const SignPreset &preset) {
     if (now - lastScrollMs_ >= preset.scrollDelayMs) {
       lastScrollMs_ = now;
       scrollOffset_--;
-      const int textWidth = textPixelWidth(preset);
+      const int textWidth = textBlockPixelWidth(preset, textLayout_, textLines_, textLineCount_);
       if (scrollOffset_ < -textWidth) {
         scrollOffset_ = PANEL_RES_X;
       }
@@ -151,7 +257,7 @@ void DisplayEngine::tickText(const SignPreset &preset) {
   }
 
   if (dirty_) {
-    redrawTextBand();
+    redrawTextBlock();
     dirty_ = false;
   }
 }
@@ -159,6 +265,10 @@ void DisplayEngine::tickText(const SignPreset &preset) {
 void DisplayEngine::tickGif(const SignPreset &preset) {
   (void)preset;
   gifPlayerTick();
+}
+
+void DisplayEngine::tickEffect(const SignPreset &preset) {
+  effectRendererTick(static_cast<EffectId>(preset.effectId));
 }
 
 void DisplayEngine::tick() {
@@ -172,13 +282,19 @@ void DisplayEngine::tick() {
 
   if (flashUntilMs_ > 0 && millis() >= flashUntilMs_) {
     flashUntilMs_ = 0;
-    flashIndex_ = -1;
     applyActivePreset();
   }
 
-  if (gifMode_) {
-    tickGif(runtime_);
-  } else {
-    tickText(runtime_);
+  switch (activeContentType_) {
+    case ContentType::Effect:
+      tickEffect(runtime_);
+      break;
+    case ContentType::Gif:
+      tickGif(runtime_);
+      break;
+    case ContentType::Text:
+    default:
+      tickText(runtime_);
+      break;
   }
 }

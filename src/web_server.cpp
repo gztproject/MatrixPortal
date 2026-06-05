@@ -1,5 +1,6 @@
 #include "web_server.h"
 
+#include "effect_renderer.h"
 #include "web_ui.h"
 #include "wifi_manager.h"
 
@@ -38,6 +39,11 @@ void appendWifiStatus(JsonObject obj) {
 }
 
 void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
+  obj["contentType"] = contentTypeToString(preset.contentType);
+  obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
+  obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
+  obj["fontScale"] = fontScaleToString(preset.fontScale);
+  obj["rowCount"] = preset.rowCount;
   obj["text"] = preset.text;
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
@@ -51,6 +57,22 @@ void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
 }
 
 bool jsonToPreset(JsonObject obj, SignPreset &preset) {
+  if (obj["contentType"].is<const char *>()) {
+    preset.contentType = contentTypeFromString(obj["contentType"]);
+  }
+  if (obj["effectId"].is<const char *>()) {
+    preset.effectId = static_cast<uint8_t>(effectIdFromString(obj["effectId"]));
+  } else if (obj["effectId"].is<int>()) {
+    preset.effectId = static_cast<uint8_t>(obj["effectId"].as<int>());
+  }
+  if (obj["fontScale"].is<const char *>()) {
+    preset.fontScale = fontScaleFromString(obj["fontScale"]);
+  }
+  if (obj["rowCount"].is<int>()) {
+    preset.rowCount = static_cast<uint8_t>(obj["rowCount"].as<int>());
+  } else if (obj["rowCount"].is<uint8_t>()) {
+    preset.rowCount = obj["rowCount"];
+  }
   if (obj["text"].is<const char *>()) {
     strlcpy(preset.text, obj["text"], sizeof(preset.text));
   }
@@ -73,25 +95,13 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
     preset.colorG = (rgb >> 8) & 0xFF;
     preset.colorB = rgb & 0xFF;
   }
+  if (preset.rowCount < 1) {
+    preset.rowCount = 1;
+  }
+  if (preset.rowCount > 4) {
+    preset.rowCount = 4;
+  }
   return true;
-}
-
-int parsePresetIdFromUrl(const String &url) {
-  const int presetsPos = url.indexOf("/api/presets/");
-  if (presetsPos < 0) {
-    return -1;
-  }
-  const int start = presetsPos + 13;
-  if (start >= static_cast<int>(url.length())) {
-    return -1;
-  }
-  const int slash = url.indexOf('/', start);
-  const String idStr = slash >= 0 ? url.substring(start, slash) : url.substring(start);
-  const int id = idStr.toInt();
-  if (id < 0 || id >= PRESET_COUNT) {
-    return -1;
-  }
-  return id;
 }
 
 void sendPresetsJson(AsyncWebServerRequest *request) {
@@ -108,6 +118,21 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
   serializeJson(doc, body);
   request->send(200, "application/json", body);
 }
+
+void appendPresetFields(JsonObject obj, const SignPreset &preset) {
+  obj["contentType"] = contentTypeToString(preset.contentType);
+  obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
+  obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
+  obj["fontScale"] = fontScaleToString(preset.fontScale);
+  obj["rowCount"] = preset.rowCount;
+  obj["text"] = preset.text;
+  obj["scroll"] = preset.scroll;
+  obj["scrollDelayMs"] = preset.scrollDelayMs;
+  obj["brightness"] = preset.brightness;
+  char color[8];
+  snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
+  obj["color"] = color;
+}
 }  // namespace
 
 void webServerBegin(DisplayEngine &engine, PresetStore &store) {
@@ -116,6 +141,21 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", WEB_UI_HTML);
+  });
+
+  server.on("/api/effects", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    JsonArray arr = doc["effects"].to<JsonArray>();
+    size_t count = 0;
+    const EffectInfo *catalog = effectCatalog(&count);
+    for (size_t i = 0; i < count; i++) {
+      JsonObject item = arr.add<JsonObject>();
+      item["id"] = catalog[i].id;
+      item["label"] = catalog[i].label;
+    }
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
   });
 
   server.on("/api/presets", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -167,13 +207,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
     const SignPreset preset = displayEngine->activePreset();
     JsonDocument doc;
-    doc["text"] = preset.text;
-    doc["scroll"] = preset.scroll;
-    doc["scrollDelayMs"] = preset.scrollDelayMs;
-    doc["brightness"] = preset.brightness;
-    char color[8];
-    snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
-    doc["color"] = color;
+    appendPresetFields(doc.to<JsonObject>(), preset);
     doc["activeIndex"] = displayEngine->activeIndex();
     appendWifiStatus(doc.to<JsonObject>());
 
@@ -237,8 +271,10 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       LittleFS.remove(path);
     }
     SignPreset preset = presetStore->get(id);
-    preset.gifPath[0] = '\0';
     path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
+    if (preset.contentType == ContentType::Gif) {
+      preset.contentType = ContentType::Text;
+    }
     displayEngine->applyPreset(preset, id);
     request->send(200, "application/json", "{\"ok\":true}");
   });
@@ -262,6 +298,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
         SignPreset preset = presetStore->get(uploadPresetId);
         const String path = presetStore->gifPathForSlot(uploadPresetId);
         path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
+        preset.contentType = ContentType::Gif;
         displayEngine->applyPreset(preset, uploadPresetId);
         request->send(200, "application/json", "{\"ok\":true}");
       },
