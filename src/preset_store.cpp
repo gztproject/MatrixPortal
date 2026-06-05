@@ -1,6 +1,7 @@
 #include "preset_store.h"
 
 #include "effect_renderer.h"
+#include "panel_profile.h"
 
 #include <ArduinoJson.h>
 #include <FS.h>
@@ -38,41 +39,36 @@ ContentType contentTypeFromString(const char *value) {
   return ContentType::Text;
 }
 
-const char *fontScaleToString(FontScale scale) {
-  switch (scale) {
-    case FontScale::Quarter:
-      return "quarter";
-    case FontScale::Half:
-      return "half";
-    case FontScale::ThreeQuarter:
-      return "three_quarter";
-    case FontScale::Full:
-      return "full";
-    default:
-      return "half";
+uint8_t clampTextHeightPx(int px) {
+  if (px < TEXT_HEIGHT_PX_MIN) {
+    return TEXT_HEIGHT_PX_MIN;
   }
+  if (px > PANEL_RES_Y) {
+    return PANEL_RES_Y;
+  }
+  return static_cast<uint8_t>(px);
 }
 
-FontScale fontScaleFromString(const char *value) {
+uint8_t textHeightPxFromLegacyFontScale(const char *value) {
   if (!value) {
-    return FontScale::Half;
+    return TEXT_HEIGHT_PX_DEFAULT;
   }
   if (strcmp(value, "quarter") == 0) {
-    return FontScale::Quarter;
+    return clampTextHeightPx(PANEL_RES_Y / 4);
   }
   if (strcmp(value, "three_quarter") == 0) {
-    return FontScale::ThreeQuarter;
+    return clampTextHeightPx((PANEL_RES_Y * 3) / 4);
   }
   if (strcmp(value, "full") == 0) {
-    return FontScale::Full;
+    return clampTextHeightPx(PANEL_RES_Y);
   }
-  return FontScale::Half;
+  return TEXT_HEIGHT_PX_DEFAULT;
 }
 
 void PresetStore::setDefaults(SignPreset &preset) const {
   preset.contentType = ContentType::Text;
   preset.effectId = 0;
-  preset.fontScale = FontScale::Half;
+  preset.textHeightPx = TEXT_HEIGHT_PX_DEFAULT;
   preset.rowCount = 1;
   strncpy(preset.text, "MatrixPortal", sizeof(preset.text) - 1);
   preset.text[sizeof(preset.text) - 1] = '\0';
@@ -186,8 +182,10 @@ void PresetStore::loadAll() {
     } else if (doc["effectId"].is<int>()) {
       preset.effectId = static_cast<uint8_t>(doc["effectId"].as<int>());
     }
-    if (doc["fontScale"].is<const char *>()) {
-      preset.fontScale = fontScaleFromString(doc["fontScale"]);
+    if (doc["textHeightPx"].is<int>()) {
+      preset.textHeightPx = clampTextHeightPx(doc["textHeightPx"].as<int>());
+    } else if (doc["fontScale"].is<const char *>()) {
+      preset.textHeightPx = textHeightPxFromLegacyFontScale(doc["fontScale"]);
     }
     preset.rowCount = doc["rowCount"] | preset.rowCount;
     if (preset.rowCount < 1) {
@@ -210,7 +208,7 @@ void PresetStore::savePreset(int index) {
   JsonDocument doc;
   doc["contentType"] = contentTypeToString(presets_[index].contentType);
   doc["effectId"] = effectIdToString(static_cast<EffectId>(presets_[index].effectId));
-  doc["fontScale"] = fontScaleToString(presets_[index].fontScale);
+  doc["textHeightPx"] = presets_[index].textHeightPx;
   doc["rowCount"] = presets_[index].rowCount;
   doc["text"] = presets_[index].text;
   doc["scroll"] = presets_[index].scroll;

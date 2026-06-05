@@ -6,6 +6,7 @@ bool wifiManagerBegin();
 void wifiManagerForgetSta();
 bool wifiManagerConnectSta(const char *ssid, const char *password);
 String wifiApSsid();
+String wifiApPassword();
 String wifiApIp();
 bool wifiStaConnected();
 String wifiStaIp();

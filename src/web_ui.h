@@ -38,11 +38,15 @@ summary{cursor:pointer;color:#aaa}
 #status{font-size:.85rem;color:#888;margin-top:16px;line-height:1.5}
 .warn{color:#fa0;font-size:.8rem;margin-top:4px}
 .hint{color:#666;font-size:.8rem;margin-top:4px}
+.cheat{width:100%;border-collapse:collapse;font-size:.75rem;margin-top:8px}
+.cheat th,.cheat td{border:1px solid #333;padding:4px 6px;text-align:center}
+.cheat th{color:#888;font-weight:600}
+.cheat td{color:#ccc}
 </style>
 </head>
 <body>
 <h1>MatrixSign</h1>
-<div class="banner"><strong>Field mode:</strong> Connect phone to Wi-Fi <strong>MatrixSign</strong>, then open <strong>http://192.168.4.1</strong></div>
+<div class="banner"><strong>Field mode:</strong> Connect to Wi-Fi <strong>MatrixSign</strong> (password <strong id="apPass">matrixsign</strong>), then open <strong>http://192.168.4.1</strong></div>
 
 <section>
 <label>Presets (1–8)</label>
@@ -66,13 +70,22 @@ summary{cursor:pointer;color:#aaa}
 <label for="text">Message</label>
 <textarea id="text" maxlength="200" placeholder="HELLO&#10;LINE TWO"></textarea>
 <p class="hint">Use line breaks for multiple rows (max rows setting below).</p>
-<label>Font size (panel height)</label>
-<div class="seg" id="fontScaleSeg">
-<button type="button" data-scale="quarter">1/4</button>
-<button type="button" data-scale="half" class="active">1/2</button>
-<button type="button" data-scale="three_quarter">3/4</button>
-<button type="button" data-scale="full">Full</button>
+<label>Text block height (px)</label>
+<div class="seg" id="textHeightSeg">
+<button type="button" data-height="13">13</button>
+<button type="button" data-height="26" class="active">26</button>
+<button type="button" data-height="39">39</button>
+<button type="button" data-height="52">52</button>
 </div>
+<div class="row">
+<input type="number" id="textHeight" min="8" max="52" value="26">
+<span class="hint">px total · panel is 52 px tall</span>
+</div>
+<details>
+<summary>Text size cheatsheet (104×52 panel)</summary>
+<p class="hint">Default font: 6×8 px per character at size 1. Block height splits evenly across rows.</p>
+<table class="cheat" id="textCheat"></table>
+</details>
 <label>Rows</label>
 <div class="seg" id="rowSeg">
 <button type="button" data-rows="1" class="active">1</button>
@@ -131,18 +144,54 @@ let selectedColor="#FFFFFF";
 let selectedSlot=0;
 let activeSlot=0;
 let contentType="text";
-let fontScale="half";
+let textHeightPx=26;
 let rowCount=1;
 let selectedEffect="bright_white";
 let effects=[];
 let presets=[];
+const PANEL_W=104;
+const PANEL_H=52;
+const TEXT_HEIGHTS=[13,26,39,52];
 const $=id=>document.getElementById(id);
+
+function textMetrics(height,rows){
+  const line=Math.floor(height/rows);
+  const size=Math.max(1,Math.min(6,Math.floor(line/8)));
+  const glyph=size*8;
+  const chars=Math.floor(PANEL_W/(6*size));
+  return{line,size,glyph,chars};
+}
+
+function renderTextCheatsheet(){
+  const el=$("textCheat");
+  if(!el)return;
+  let html="<tr><th>Block px</th><th>Rows</th><th>Line px</th><th>Size</th><th>Glyph px</th><th>~Chars</th></tr>";
+  TEXT_HEIGHTS.forEach(h=>{
+    for(let rows=1;rows<=4;rows++){
+      const m=textMetrics(h,rows);
+      html+=`<tr><td>${h}</td><td>${rows}</td><td>${m.line}</td><td>${m.size}</td><td>${m.glyph}</td><td>${m.chars}</td></tr>`;
+    }
+  });
+  el.innerHTML=html;
+}
+
+function resolveTextHeight(p){
+  if(p.textHeightPx)return p.textHeightPx;
+  const legacy={quarter:13,half:26,three_quarter:39,full:52};
+  return legacy[p.fontScale]||26;
+}
+
+function setTextHeight(px){
+  textHeightPx=Math.min(PANEL_H,Math.max(8,parseInt(px,10)||26));
+  $("textHeight").value=textHeightPx;
+  setSegActive($("textHeightSeg"),"height",textHeightPx);
+}
 
 function formBody(){
   return{
     contentType,
     effectId:selectedEffect,
-    fontScale,
+    textHeightPx,
     rowCount,
     text:$("text").value,
     scroll:$("scroll").checked,
@@ -161,13 +210,13 @@ function showSections(){
   $("gifSection").classList.toggle("hidden",contentType!=="gif");
   $("effectSection").classList.toggle("hidden",contentType!=="effect");
   setSegActive($("contentTypeSeg"),"type",contentType);
-  setSegActive($("fontScaleSeg"),"scale",fontScale);
+  setSegActive($("textHeightSeg"),"height",textHeightPx);
   setSegActive($("rowSeg"),"rows",rowCount);
 }
 
 function fillForm(p){
   contentType=(p.contentType||"text").toLowerCase();
-  fontScale=p.fontScale||"half";
+  setTextHeight(resolveTextHeight(p));
   rowCount=p.rowCount||1;
   selectedEffect=p.effectId||"bright_white";
   $("text").value=p.text||"";
@@ -222,7 +271,7 @@ function slotSummary(p){
   if(!p)return"empty";
   if(p.contentType==="effect")return"Effect: "+(p.effectLabel||p.effectId);
   if(p.contentType==="gif"&&p.hasGif)return"GIF";
-  return`Message (${p.fontScale||"half"}, ${p.rowCount||1} row)`;
+  return`Message (${resolveTextHeight(p)} px, ${p.rowCount||1} row)`;
 }
 
 function updateSlotInfo(){
@@ -232,8 +281,10 @@ function updateSlotInfo(){
 
 function updateStatus(c){
   let s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"}`;
+  if(c.apPassword)s+=` · pass ${c.apPassword}`;
   if(c.staConnected)s+=` · Home ${c.staIp} (${c.staRssi} dBm)`;
   $("status").textContent=s;
+  if(c.apPassword)$("apPass").textContent=c.apPassword;
 }
 
 async function loadEffects(){
@@ -269,9 +320,10 @@ function updateLenWarn(){$("lenWarn").hidden=($("text").value.length<20);}
 document.querySelectorAll("#contentTypeSeg button").forEach(b=>b.addEventListener("click",()=>{
   contentType=b.dataset.type;showSections();updateSlotInfo();
 }));
-document.querySelectorAll("#fontScaleSeg button").forEach(b=>b.addEventListener("click",()=>{
-  fontScale=b.dataset.scale;showSections();
+document.querySelectorAll("#textHeightSeg button").forEach(b=>b.addEventListener("click",()=>{
+  setTextHeight(parseInt(b.dataset.height,10));showSections();
 }));
+$("textHeight").addEventListener("input",e=>setTextHeight(e.target.value));
 document.querySelectorAll("#rowSeg button").forEach(b=>b.addEventListener("click",()=>{
   rowCount=parseInt(b.dataset.rows,10);showSections();
 }));
@@ -333,7 +385,7 @@ $("wifiReset").addEventListener("click",async()=>{
   loadPresets();
 });
 
-loadEffects().then(loadPresets);
+loadEffects().then(()=>{renderTextCheatsheet();loadPresets();});
 </script>
 </body>
 </html>

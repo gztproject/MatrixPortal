@@ -9,20 +9,6 @@
 namespace {
 constexpr unsigned long kFlashMs = 400;
 
-int blockHeightForScale(FontScale scale) {
-  switch (scale) {
-    case FontScale::Quarter:
-      return PANEL_RES_Y / 4;
-    case FontScale::Half:
-      return PANEL_RES_Y / 2;
-    case FontScale::ThreeQuarter:
-      return (PANEL_RES_Y * 3) / 4;
-    case FontScale::Full:
-    default:
-      return PANEL_RES_Y;
-  }
-}
-
 int clampInt(int value, int minValue, int maxValue) {
   if (value < minValue) {
     return minValue;
@@ -72,6 +58,7 @@ void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persis
   if (normalized.rowCount > 4) {
     normalized.rowCount = 4;
   }
+  normalized.textHeightPx = clampTextHeightPx(normalized.textHeightPx);
 
   store_->set(index, normalized);
   if (index == activeIndex()) {
@@ -154,7 +141,7 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
 DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &preset) const {
   TextLayout layout;
   layout.rowCount = clampInt(preset.rowCount, 1, 4);
-  layout.blockHeight = blockHeightForScale(preset.fontScale);
+  layout.blockHeight = clampTextHeightPx(preset.textHeightPx);
   layout.blockTop = (PANEL_RES_Y - layout.blockHeight) / 2;
   const int lineHeight = layout.blockHeight / layout.rowCount;
   layout.textSize = clampInt(lineHeight / 8, 1, 6);

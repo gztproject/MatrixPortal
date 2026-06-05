@@ -5,6 +5,7 @@
 
 namespace {
 constexpr char kApSsid[] = "MatrixSign";
+constexpr char kApPassword[] = "matrixsign";
 const IPAddress kApIp(192, 168, 4, 1);
 const IPAddress kApGateway(192, 168, 4, 1);
 const IPAddress kApNetmask(255, 255, 255, 0);
@@ -24,12 +25,12 @@ bool wifiManagerBegin() {
     return false;
   }
 
-  if (!WiFi.softAP(kApSsid)) {
+  if (!WiFi.softAP(kApSsid, kApPassword)) {
     Serial.println("SoftAP start failed");
     return false;
   }
 
-  Serial.printf("AP: %s  http://%s\n", kApSsid, wifiApIp().c_str());
+  Serial.printf("AP: %s (WPA2)  http://%s\n", kApSsid, wifiApIp().c_str());
 
   WiFiManager wm;
   if (wm.getWiFiIsSaved()) {
@@ -77,6 +78,10 @@ bool wifiManagerConnectSta(const char *ssid, const char *password) {
 
 String wifiApSsid() {
   return String(kApSsid);
+}
+
+String wifiApPassword() {
+  return String(kApPassword);
 }
 
 String wifiApIp() {

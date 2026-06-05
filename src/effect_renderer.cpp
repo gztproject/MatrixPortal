@@ -70,7 +70,7 @@ void drawStop() {
   panel->setTextSize(kTextSize);
   panel->setTextWrap(false);
   panel->setTextColor(panel->color565(255, 255, 255));
-  panel->setCursor((PANEL_RES_X - textWidth) / 2, (PANEL_RES_Y - textHeight) / 2);
+  panel->setCursor((PANEL_RES_X - textWidth) / 2 + 2, (PANEL_RES_Y - textHeight) / 2);
   panel->print(kStopText);
 }
 

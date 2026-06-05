@@ -27,6 +27,7 @@ uint32_t parseHexColor(const char *hex) {
 
 void appendWifiStatus(JsonObject obj) {
   obj["apSsid"] = wifiApSsid();
+  obj["apPassword"] = wifiApPassword();
   obj["apIp"] = wifiApIp();
   obj["staConnected"] = wifiStaConnected();
   if (wifiStaConnected()) {
@@ -42,7 +43,7 @@ void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
   obj["contentType"] = contentTypeToString(preset.contentType);
   obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
   obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
-  obj["fontScale"] = fontScaleToString(preset.fontScale);
+  obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
   obj["text"] = preset.text;
   obj["scroll"] = preset.scroll;
@@ -65,8 +66,10 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   } else if (obj["effectId"].is<int>()) {
     preset.effectId = static_cast<uint8_t>(obj["effectId"].as<int>());
   }
-  if (obj["fontScale"].is<const char *>()) {
-    preset.fontScale = fontScaleFromString(obj["fontScale"]);
+  if (obj["textHeightPx"].is<int>()) {
+    preset.textHeightPx = clampTextHeightPx(obj["textHeightPx"].as<int>());
+  } else if (obj["fontScale"].is<const char *>()) {
+    preset.textHeightPx = textHeightPxFromLegacyFontScale(obj["fontScale"]);
   }
   if (obj["rowCount"].is<int>()) {
     preset.rowCount = static_cast<uint8_t>(obj["rowCount"].as<int>());
@@ -123,7 +126,7 @@ void appendPresetFields(JsonObject obj, const SignPreset &preset) {
   obj["contentType"] = contentTypeToString(preset.contentType);
   obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
   obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
-  obj["fontScale"] = fontScaleToString(preset.fontScale);
+  obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
   obj["text"] = preset.text;
   obj["scroll"] = preset.scroll;
@@ -158,11 +161,30 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
     request->send(200, "application/json", body);
   });
 
+  server.on("/api/presets/select", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int id = doc["id"] | -1;
+              if (id < 0 || id >= PRESET_COUNT) {
+                request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+                return;
+              }
+              displayEngine->selectPreset(id);
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
   server.on("/api/presets", HTTP_GET, [](AsyncWebServerRequest *request) {
     sendPresetsJson(request);
   });
 
-  server.on("/api/presets", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+  server.on(AsyncURIMatcher::exact("/api/presets"), HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               if (index + len == total) {
                 JsonDocument doc;
@@ -183,25 +205,6 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 displayEngine->applyPreset(preset, id);
                 request->send(200, "application/json", "{\"ok\":true}");
               }
-            });
-
-  server.on("/api/presets/select", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
-            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-              if (index + len != total) {
-                return;
-              }
-              JsonDocument doc;
-              if (deserializeJson(doc, data, len)) {
-                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
-                return;
-              }
-              const int id = doc["id"] | -1;
-              if (id < 0 || id >= PRESET_COUNT) {
-                request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
-                return;
-              }
-              displayEngine->selectPreset(id);
-              request->send(200, "application/json", "{\"ok\":true}");
             });
 
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
