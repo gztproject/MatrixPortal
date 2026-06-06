@@ -7,6 +7,8 @@
 
 namespace {
 constexpr unsigned long kResyncMs = 3600000UL;
+constexpr unsigned long kNtpWaitMs = 5000UL;
+constexpr unsigned long kRetryMs = 30000UL;
 constexpr long kMinValidUnix = 1700000000L;
 
 struct TimezoneOption {
@@ -26,6 +28,8 @@ bool timeValid = false;
 TimeSyncSource timeSource = TimeSyncSource::None;
 unsigned long lastSyncAttemptMs = 0;
 unsigned long lastSyncSuccessMs = 0;
+unsigned long ntpWaitStartMs = 0;
+bool ntpWaiting = false;
 
 const TimezoneOption *findTimezone(const char *timezoneId) {
   if (!timezoneId || timezoneId[0] == '\0') {
@@ -45,6 +49,17 @@ void applyPosixTimezone(const char *posixTz) {
   }
   setenv("TZ", posixTz, 1);
   tzset();
+}
+
+bool tryAcceptNtpTime(unsigned long now) {
+  const time_t t = time(nullptr);
+  if (t >= kMinValidUnix) {
+    timeValid = true;
+    timeSource = TimeSyncSource::Ntp;
+    lastSyncSuccessMs = now;
+    return true;
+  }
+  return false;
 }
 }  // namespace
 
@@ -76,30 +91,36 @@ bool timeSyncIsKnownTimezoneId(const char *timezoneId) {
 }
 
 void timeSyncTick() {
+  const unsigned long now = millis();
+
   if (!wifiStaConnected()) {
+    ntpWaiting = false;
     return;
   }
 
-  const unsigned long now = millis();
+  if (ntpWaiting) {
+    if (tryAcceptNtpTime(now)) {
+      ntpWaiting = false;
+      return;
+    }
+    if (now - ntpWaitStartMs >= kNtpWaitMs) {
+      ntpWaiting = false;
+    }
+    return;
+  }
+
   if (timeValid && now - lastSyncSuccessMs < kResyncMs) {
     return;
   }
-  if (now - lastSyncAttemptMs < 30000UL) {
+  if (now - lastSyncAttemptMs < kRetryMs) {
     return;
   }
 
   lastSyncAttemptMs = now;
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  for (int i = 0; i < 20; i++) {
-    delay(100);
-    const time_t t = time(nullptr);
-    if (t >= kMinValidUnix) {
-      timeValid = true;
-      timeSource = TimeSyncSource::Ntp;
-      lastSyncSuccessMs = millis();
-      return;
-    }
-  }
+  ntpWaitStartMs = now;
+  ntpWaiting = true;
+  tryAcceptNtpTime(now);
 }
 
 bool timeIsValid() {
@@ -142,6 +163,7 @@ bool timeSyncSetUnix(time_t unixSeconds) {
   timeValid = true;
   timeSource = TimeSyncSource::Browser;
   lastSyncSuccessMs = millis();
+  ntpWaiting = false;
   return true;
 }
 

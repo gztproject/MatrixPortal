@@ -235,7 +235,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 <details>
 <summary>Security</summary>
-<p class="hint">Web UI uses HTTP Basic Auth. Default username <strong>admin</strong>. On first boot the password is printed to the serial monitor (115200 baud).</p>
+<p class="hint">Web UI uses HTTP Basic Auth. Default login <strong>admin</strong> / <strong>admin</strong> — change under Security before field use.</p>
 <label for="newAdminPass">New Web UI password</label>
 <input type="password" id="newAdminPass" autocomplete="new-password" minlength="8">
 <button type="button" class="btn-secondary" id="changeAdminPass">Change Web UI password</button>
@@ -400,7 +400,7 @@ async function apiJson(url,opts={}){
   let data={};
   try{data=await r.json();}catch(e){}
   if(r.status===401){
-    throw new Error("Login required — username admin, password from serial monitor (115200 baud) or Security section");
+    throw new Error("Login required — default admin/admin, or use Security to set a new password");
   }
   if(!r.ok){
     const err=data.error||(`Request failed (${r.status})`);
@@ -728,7 +728,7 @@ function updateBanner(c){
     $("banner").innerHTML=`<strong>Connected</strong> · ${c.staIp||""}${c.staRssi!=null?` · ${c.staRssi} dBm`:""} · open <strong>http://${c.staIp||""}/</strong>`;
     return;
   }
-  $("banner").innerHTML=`<strong>Field mode:</strong> join Wi-Fi <strong>${c.apSsid||"MatrixSign"}</strong> (password set at build time — see README), then open <strong>http://${c.apIp||"192.168.4.1"}</strong>. Web UI login: user <strong>admin</strong>, password from serial on first boot.`;
+  $("banner").innerHTML=`<strong>Field mode:</strong> join Wi-Fi <strong>${c.apSsid||"MatrixSign"}</strong> (password set at build time — see README), then open <strong>http://${c.apIp||"192.168.4.1"}</strong>. Web UI login: <strong>admin</strong> / <strong>admin</strong>.`;
 }
 
 function updateConnBar(c){

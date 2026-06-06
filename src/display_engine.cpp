@@ -7,8 +7,25 @@
 #include "time_sync.h"
 
 #include <cstring>
+#include <freertos/semphr.h>
 
 namespace {
+SemaphoreHandle_t engineMutex = nullptr;
+
+class DisplayLock {
+ public:
+  DisplayLock() {
+    if (engineMutex != nullptr) {
+      xSemaphoreTakeRecursive(engineMutex, portMAX_DELAY);
+    }
+  }
+  ~DisplayLock() {
+    if (engineMutex != nullptr) {
+      xSemaphoreGiveRecursive(engineMutex);
+    }
+  }
+};
+
 int clampInt(int value, int minValue, int maxValue) {
   if (value < minValue) {
     return minValue;
@@ -85,6 +102,10 @@ void layoutClockLines(const char *timeStr, const char *dateStr, bool showDate, i
 }  // namespace
 
 void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store) {
+  if (engineMutex == nullptr) {
+    engineMutex = xSemaphoreCreateRecursiveMutex();
+  }
+  DisplayLock lock;
   panel_ = panel;
   dma_ = dma;
   store_ = store;
@@ -95,18 +116,22 @@ void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, P
 }
 
 int DisplayEngine::activeIndex() const {
+  DisplayLock lock;
   return store_ ? store_->activeIndex() : 0;
 }
 
 SignPreset DisplayEngine::activePreset() const {
+  DisplayLock lock;
   return runtime_;
 }
 
 uint8_t DisplayEngine::globalBrightness() const {
+  DisplayLock lock;
   return store_ ? store_->globalBrightness() : GLOBAL_BRIGHTNESS_DEFAULT;
 }
 
 void DisplayEngine::setGlobalBrightness(uint8_t percent) {
+  DisplayLock lock;
   if (!store_) {
     return;
   }
@@ -115,6 +140,7 @@ void DisplayEngine::setGlobalBrightness(uint8_t percent) {
 }
 
 void DisplayEngine::adjustGlobalBrightness(int delta) {
+  DisplayLock lock;
   if (!store_ || delta == 0) {
     return;
   }
@@ -135,6 +161,7 @@ void DisplayEngine::adjustGlobalBrightness(int delta) {
 }
 
 void DisplayEngine::selectPreset(int index) {
+  DisplayLock lock;
   if (!store_) {
     return;
   }
@@ -144,6 +171,7 @@ void DisplayEngine::selectPreset(int index) {
 }
 
 void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persist) {
+  DisplayLock lock;
   if (!store_ || index < 0 || index >= PRESET_COUNT) {
     return;
   }
@@ -160,6 +188,7 @@ void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persis
 }
 
 void DisplayEngine::previewOnPanel(const SignPreset &preset, int gifSlotIndex) {
+  DisplayLock lock;
   if (!store_ || gifSlotIndex < 0 || gifSlotIndex >= PRESET_COUNT) {
     return;
   }
@@ -431,6 +460,7 @@ void DisplayEngine::tickTime(const SignPreset &preset) {
 }
 
 void DisplayEngine::refreshTimeDisplay() {
+  DisplayLock lock;
   if (activeContentType_ == ContentType::Clock || activeContentType_ == ContentType::Countdown) {
     redrawTimeBlock();
   }
@@ -518,6 +548,7 @@ void DisplayEngine::tickEffect(const SignPreset &preset) {
 }
 
 void DisplayEngine::tick() {
+  DisplayLock lock;
   if (!panel_ || !store_) {
     return;
   }

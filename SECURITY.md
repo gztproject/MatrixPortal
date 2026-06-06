@@ -23,7 +23,7 @@ MatrixSign is hobby firmware for a garage LED sign — not certified signage. Re
 ### Web UI (HTTP Basic Auth)
 
 - Username: `admin` (fixed)
-- Password: random **12-character** value generated on **first boot**, stored in NVS, printed once on the serial monitor (115200 baud)
+- Password: default **`admin`** / **`admin`** on first boot (stored in NVS); change in Web UI **Security** (new password min 8 characters)
 - Change via **Security** in the Web UI or `POST /api/auth/password` (min 8 characters, authenticated)
 
 ## Network exposure

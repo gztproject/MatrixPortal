@@ -46,12 +46,13 @@ Contributions welcome — see [LICENSE](LICENSE) (MIT).
 
 1. **Set AP password** in `platformio.ini` before flashing (see [Configuration](#configuration-notes)).
 2. Build and upload: `pio run -t upload`
-3. Open serial monitor (**115200 baud**) and note the **Web UI password** printed on first boot (`admin` / random 12 chars).
-4. Join Wi‑Fi **`MatrixSign`** with your build-time AP password.
-5. Open **http://192.168.4.1** — browser prompts for Web UI login.
-6. Configure slots; use **Sync time from this device** if no home Wi‑Fi (clock / target countdown).
-7. Optionally connect home Wi‑Fi; device stays reachable on AP **and** STA IP.
-8. Verify messages and effects on **your** panel before leaving unattended.
+3. Join Wi‑Fi **`MatrixSign`** with your build-time AP password.
+4. Open **http://192.168.4.1** — log in with **admin** / **admin** (change under Security before field use).
+5. Configure slots; use **Sync time from this device** if no home Wi‑Fi (clock / target countdown).
+6. Optionally connect home Wi‑Fi; device stays reachable on AP **and** STA IP.
+7. Verify messages and effects on **your** panel before leaving unattended.
+
+If login fails after an older firmware build (random password stored in NVS), run `pio run -t erase` then upload again.
 
 ---
 
@@ -79,7 +80,7 @@ build_flags = -DMATRIXSIGN_AP_PASSWORD=\"your-long-ap-password\"
    - **SSID:** `MatrixSign`
    - **Password:** your `MATRIXSIGN_AP_PASSWORD` build flag (dev default `matrixsign` — change before deploy)
    - **URL:** http://192.168.4.1
-2. Log in to the Web UI: username **`admin`**, password from serial (first boot) or your changed password.
+2. Log in to the Web UI: **`admin`** / **`admin`** (change under Security before field use).
 3. Optionally connect to home Wi‑Fi from **Home Wi‑Fi (optional)**; the sign keeps the AP up and uses STA in the background when connected.
 
 On home Wi‑Fi, use the IP shown in the UI status bar (e.g. `http://10.x.x.x`).
@@ -230,7 +231,7 @@ main.cpp
 |---------|----------|
 | AP password (build time) | `build_flags = -DMATRIXSIGN_AP_PASSWORD=\"...\"` in [`platformio.ini`](platformio.ini) |
 | AP SSID | [`src/wifi_manager.cpp`](src/wifi_manager.cpp) (`MatrixSign`) |
-| Web UI password | Generated on first boot; change in UI or NVS key `webPass` in namespace `matrixsign` |
+| Web UI password | Default **`admin`**; change in Web UI **Security** (min 8 characters) |
 | Default brightness | `GLOBAL_BRIGHTNESS_DEFAULT` in [`src/preset_store.h`](src/preset_store.h) |
 | Effect timing / colours | [`src/effect_renderer.cpp`](src/effect_renderer.cpp) |
 | GPIO map | [`src/panel_profile.cpp`](src/panel_profile.cpp) |

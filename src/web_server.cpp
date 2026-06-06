@@ -179,6 +179,7 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
   appendWifiStatus(root);
 
   String body;
+  body.reserve(4096);
   serializeJson(doc, body);
   request->send(200, "application/json", body);
 }
@@ -210,7 +211,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     AUTH(request);
-    request->send(200, "text/html", WEB_UI_HTML);
+    request->send_P(200, "text/html", WEB_UI_HTML);
   });
 
   server.on("/api/effects", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -664,6 +665,10 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
           uploadFile.close();
         }
       });
+
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    request->send(404, "text/plain", "Not found");
+  });
 
   server.begin();
   Serial.println("Web server started on port 80");

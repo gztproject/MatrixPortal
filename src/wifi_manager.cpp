@@ -57,7 +57,6 @@ void wifiManagerTick() {
   }
   if (millis() - staAttemptStartMs > kStaAttemptTimeoutMs) {
     staAttemptStarted = false;
-    WiFi.disconnect(true);
     Serial.println("Home Wi-Fi connect timed out");
   }
 }
