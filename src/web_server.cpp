@@ -5,6 +5,8 @@
 #include "wifi_manager.h"
 #include "time_sync.h"
 
+#include "web_auth.h"
+
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <FS.h>
@@ -19,6 +21,18 @@ File uploadFile;
 int uploadPresetId = -1;
 size_t uploadTotalBytes = 0;
 
+#define AUTH(request)           \
+  do {                          \
+    if (!webAuthCheck(request)) \
+      return;                   \
+  } while (0)
+
+#define AUTH_BODY(request, index) \
+  do {                            \
+    if ((index) == 0 && !webAuthCheck(request)) \
+      return;                     \
+  } while (0)
+
 uint32_t parseHexColor(const char *hex) {
   if (!hex || hex[0] != '#') {
     return 0xFFFFFF;
@@ -28,7 +42,6 @@ uint32_t parseHexColor(const char *hex) {
 
 void appendWifiStatus(JsonObject obj) {
   obj["apSsid"] = wifiApSsid();
-  obj["apPassword"] = wifiApPassword();
   obj["apIp"] = wifiApIp();
   obj["staConnected"] = wifiStaConnected();
   if (wifiStaConnected()) {
@@ -196,10 +209,12 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   presetStore = &store;
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     request->send(200, "text/html", WEB_UI_HTML);
   });
 
   server.on("/api/effects", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     JsonDocument doc;
     JsonArray arr = doc["effects"].to<JsonArray>();
     size_t count = 0;
@@ -217,6 +232,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/presets/select", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -235,6 +251,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
             });
 
   server.on("/api/brightness", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     JsonDocument doc;
     doc["brightness"] = presetStore->globalBrightness();
     String body;
@@ -244,6 +261,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/brightness", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -262,11 +280,13 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
             });
 
   server.on("/api/presets", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     sendPresetsJson(request);
   });
 
   server.on(AsyncURIMatcher::exact("/api/presets"), HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len == total) {
                 JsonDocument doc;
                 if (deserializeJson(doc, data, len)) {
@@ -289,6 +309,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
             });
 
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     const SignPreset preset = displayEngine->activePreset();
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
@@ -304,6 +325,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -323,6 +345,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/preview", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -347,6 +370,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/presets/duplicate", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -370,6 +394,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/playlist", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -394,6 +419,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/timezone", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -414,6 +440,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/time/sync", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -438,7 +465,28 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
+  server.on("/api/auth/password", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const char *password = doc["password"] | "";
+              if (!webAuthSetPassword(password)) {
+                request->send(400, "application/json",
+                              "{\"error\":\"password must be at least 8 characters\"}");
+                return;
+              }
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
   server.on("/api/backup", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
     root["activeIndex"] = presetStore->activeIndex();
@@ -458,6 +506,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
 
   server.on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -512,12 +561,14 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
             });
 
   server.on("/api/wifi/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     wifiManagerForgetSta();
     request->send(200, "application/json", "{\"ok\":true}");
   });
 
   server.on("/api/wifi/connect", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
               if (index + len != total) {
                 return;
               }
@@ -537,6 +588,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
             });
 
   server.on("/api/presets/gif", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    AUTH(request);
     const int id = request->hasParam("id") ? request->getParam("id")->value().toInt() : -1;
     if (id < 0 || id >= PRESET_COUNT) {
       request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
@@ -559,6 +611,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       "/api/presets/gif",
       HTTP_POST,
       [](AsyncWebServerRequest *request) {
+        AUTH(request);
         if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {
           request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
           return;
@@ -581,6 +634,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       [](AsyncWebServerRequest *request, const String &filename, size_t index, uint8_t *data, size_t len,
          bool final) {
         if (index == 0) {
+          AUTH_BODY(request, index);
           uploadPresetId = request->hasParam("id") ? request->getParam("id")->value().toInt() : -1;
           uploadTotalBytes = 0;
           if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {

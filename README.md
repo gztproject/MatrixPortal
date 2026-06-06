@@ -2,6 +2,10 @@
 
 Firmware for an **Adafruit MatrixPortal ESP32-S3** driving a **P3.076 104×52 px, 1/13 scan** HUB75 LED panel. Configure messages, GIFs, clock/countdown, and built-in effects from a phone or laptop over Wi‑Fi.
 
+> **Supported hardware:** Adafruit MatrixPortal ESP32-S3 + **P3.076 104×52, 1/13 scan** panel only. Other panels need a new pixel map in [`src/panel_profile.cpp`](src/panel_profile.cpp).
+
+See [SECURITY.md](SECURITY.md) before deploying on a network others can use.
+
 ---
 
 ## ⚠️ Vibe-coded project — read this first
@@ -11,15 +15,13 @@ Firmware for an **Adafruit MatrixPortal ESP32-S3** driving a **P3.076 104×52 px
 **What that means in practice:**
 
 - Code structure and APIs may change without notice.
-- Error handling, security, and edge cases are incomplete.
-- There are no systematic tests; behavior is validated manually on one setup.
-- Comments and docs may lag behind the code.
-- Default Wi‑Fi credentials are hard-coded for convenience, not security.
+- Error handling and edge cases are incomplete.
+- There are no systematic unit tests; behaviour is validated manually on one setup.
 - Do **not** treat this as a reference architecture for safety-critical signage (roadworks, emergency egress, etc.).
 
-**Use at your own risk.** If you deploy it, review the code yourself, change defaults (especially AP password), and verify output on **your** panel before relying on it in the field.
+**Use at your own risk.** Review the code, set credentials before field use, and verify output on **your** panel.
 
-Contributions and hardening are welcome, but expect rough edges.
+Contributions welcome — see [LICENSE](LICENSE) (MIT).
 
 ---
 
@@ -40,6 +42,19 @@ Contributions and hardening are welcome, but expect rough edges.
 
 ---
 
+## First-time deploy checklist
+
+1. **Set AP password** in `platformio.ini` before flashing (see [Configuration](#configuration-notes)).
+2. Build and upload: `pio run -t upload`
+3. Open serial monitor (**115200 baud**) and note the **Web UI password** printed on first boot (`admin` / random 12 chars).
+4. Join Wi‑Fi **`MatrixSign`** with your build-time AP password.
+5. Open **http://192.168.4.1** — browser prompts for Web UI login.
+6. Configure slots; use **Sync time from this device** if no home Wi‑Fi (clock / target countdown).
+7. Optionally connect home Wi‑Fi; device stays reachable on AP **and** STA IP.
+8. Verify messages and effects on **your** panel before leaving unattended.
+
+---
+
 ## Quick start
 
 ### Build and upload
@@ -48,19 +63,24 @@ Requires [PlatformIO](https://platformio.org/).
 
 ```bash
 pio run -t upload
-pio run -t uploadfs   # if you add files under data/ for LittleFS
 ```
 
 Serial monitor: **115200** baud.
 
+**Before field use**, add a unique AP password to [`platformio.ini`](platformio.ini):
+
+```ini
+build_flags = -DMATRIXSIGN_AP_PASSWORD=\"your-long-ap-password\"
+```
+
 ### Connect and configure
 
-1. Power the sign. It always runs a Wi‑Fi access point:
+1. Power the sign. It runs a Wi‑Fi access point:
    - **SSID:** `MatrixSign`
-   - **Password:** `matrixsign` (change in [`src/wifi_manager.cpp`](src/wifi_manager.cpp) before deployment)
+   - **Password:** your `MATRIXSIGN_AP_PASSWORD` build flag (dev default `matrixsign` — change before deploy)
    - **URL:** http://192.168.4.1
-2. Open the Web UI in a browser.
-3. Optionally connect to home Wi‑Fi from **Home Wi‑Fi (optional)** in the UI; the sign keeps the AP up and uses STA in the background when connected.
+2. Log in to the Web UI: username **`admin`**, password from serial (first boot) or your changed password.
+3. Optionally connect to home Wi‑Fi from **Home Wi‑Fi (optional)**; the sign keeps the AP up and uses STA in the background when connected.
 
 On home Wi‑Fi, use the IP shown in the UI status bar (e.g. `http://10.x.x.x`).
 
@@ -74,9 +94,9 @@ Each slot stores one **content type** and its settings in NVS (non-volatile stor
 
 | Type | Description |
 |------|-------------|
-| **Message** | Scrolling or static text, 1–4 rows, glyph height 8–48 px, colour; UTF‑8 **č, š, ž** |
-| **Clock** | HH:MM time display (needs home Wi‑Fi + NTP) |
-| **Countdown** | Countdown to a target time (NTP) or a set **duration** (no Wi‑Fi; starts when slot is shown) |
+| **Message** | Scrolling or static text, 1–4 rows, glyph height 8–48 px, colour; UTF‑8 **č, š, ž**; optional X/Y text offset |
+| **Clock** | HH:MM (optional seconds, optional EU date); needs time via NTP or browser sync |
+| **Countdown** | Target time (needs time sync) or **duration** (starts when slot is shown; no Wi‑Fi) |
 | **GIF** | Animated GIF from LittleFS (best **104×52**, max **256 KB** per slot) |
 | **Effect** | Built-in full-panel animation (see below) |
 
@@ -87,6 +107,12 @@ Each slot also has an optional **label** (shown in the preset grid). **Duplicate
 - **Try on panel** — show editor content on the panel without saving (`POST /api/preview`).
 - **Show saved** — activate the saved slot on the panel.
 - **Save slot** — write the editor to the selected slot (1–8).
+
+### Time and timezone
+
+- **Timezone** (CET, UTC, WET, EET, GMT) applies to clock and target countdown.
+- **NTP** when home Wi‑Fi is connected (`pool.ntp.org`).
+- **Browser sync** (`POST /api/time/sync`) when NTP is unavailable (AP-only field mode).
 
 ### Playlist (auto-rotate)
 
@@ -101,7 +127,7 @@ Panel brightness (**1–100%**) is **global**, not per preset. Adjust from the W
 | ID | Label | Behaviour (summary) |
 |----|-------|---------------------|
 | `bright_white` | Bright white | Full panel solid fill |
-| `flashing_halves` | Flashing halves | Left/right halves flash alternately (replaces legacy `blue_emergency` / `yellow_emergency`) |
+| `flashing_halves` | Flashing halves | Left/right halves flash alternately |
 | `full_strobe` | Full strobe | Full-panel flash |
 | `pulse` | Pulse | Brightness pulse |
 | `border_chase` | Border chase | Animated border |
@@ -112,42 +138,43 @@ Panel brightness (**1–100%**) is **global**, not per preset. Adjust from the W
 | `stop` | Stop | Red background, white **STOP** (fixed colours) |
 | `hazard_triangle` | Hazard triangle | Amber triangle, red border, **!** (fixed colours) |
 
-Monochrome effects (all except STOP and hazard) use the preset **colour** field. Picking an effect in the Web UI applies a sensible default colour.
+Monochrome effects (all except STOP and hazard) use the preset **colour** field.
 
 Effect rendering: [`src/effect_renderer.cpp`](src/effect_renderer.cpp).
 
 ### Backup and restore
 
-Download a JSON backup of all slots, labels, playlist, and brightness. Restore overwrites device configuration from a backup file.
+Download a JSON backup of all slots, labels, playlist, brightness, and timezone. Restore overwrites device configuration from a backup file.
 
 ### Web UI
 
 Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 
+- HTTP Basic Auth on all pages and API calls
 - Context-aware banner (AP vs home Wi‑Fi)
 - Preset grid with labels, live/editing/unsaved indicators
 - Optional slot label, duplicate, playlist controls
 - **104×52 preview canvas** (approximate; effects/GIF are simplified)
-- Glyph-height slider with optimal-size suggestion
-- Scroll speed presets (Slow / Normal / Fast)
+- Timezone, browser time sync, security (change Web UI password)
 - Sticky **Try on panel** / **Show saved** / **Save slot**
 - Toast notifications for API feedback
 
 ### Wi‑Fi
 
-- **AP-first:** `MatrixSign` @ `192.168.4.1` (WPA2)
+- **AP-first:** `MatrixSign` @ `192.168.4.1` (WPA2, build-time password)
 - **Optional STA:** saved credentials via Web UI; reconnects on boot in background (30 s timeout)
 - **Forget home Wi‑Fi** clears saved STA credentials
-- **NTP:** `pool.ntp.org`, CET timezone when STA is connected ([`src/time_sync.cpp`](src/time_sync.cpp))
 
 ---
 
 ## HTTP API
 
+All endpoints require **HTTP Basic Auth** (username `admin`, password from device).
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | Web UI |
-| GET | `/api/presets` | All slots + `activeIndex` + `brightness` + playlist + Wi‑Fi status |
+| GET | `/api/presets` | All slots + status (see global fields below) |
 | POST | `/api/presets` | Save slot (`id` + preset fields) |
 | POST | `/api/presets/select` | Activate slot (`id`) |
 | POST | `/api/presets/duplicate` | Copy slot (`from`, `to`) |
@@ -156,18 +183,23 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 | GET | `/api/backup` | Export full configuration JSON |
 | POST | `/api/restore` | Restore from backup JSON |
 | GET | `/api/config` | Active preset fields + status |
-| POST | `/api/config` | Apply fields to **live** preset (legacy; Web UI uses preview + save instead) |
+| POST | `/api/config` | Apply fields to **live** preset (legacy) |
 | GET | `/api/brightness` | Global brightness |
 | POST | `/api/brightness` | Set global brightness (`brightness`: 1–100) |
 | GET | `/api/effects` | Effect catalog |
 | POST | `/api/presets/gif?id=N` | Upload GIF to slot N |
 | DELETE | `/api/presets/gif?id=N` | Remove GIF from slot N |
+| POST | `/api/timezone` | Set timezone (`timezoneId`: CET, UTC, WET, EET, GMT) |
+| POST | `/api/time/sync` | Set time from browser (`unix`: seconds UTC) |
+| POST | `/api/auth/password` | Change Web UI password (`password`, min 8 chars) |
 | POST | `/api/wifi/connect` | Save STA credentials and connect |
 | POST | `/api/wifi/reset` | Forget STA credentials |
 
-**Preset JSON fields:** `contentType`, `effectId`, `textHeightPx`, `rowCount`, `text`, `label`, `scroll`, `scrollDelayMs`, `color` (`#RRGGBB`), `effectParam` (0–100), `countdownEndUnix` (Unix seconds, target mode), `countdownDurationSec` (seconds, duration mode).
+**Preset JSON fields:** `contentType`, `effectId`, `textHeightPx`, `rowCount`, `text`, `label`, `scroll`, `scrollDelayMs`, `color` (`#RRGGBB`), `effectParam`, `countdownEndUnix`, `countdownDurationSec`, `contentOffsetX`, `contentOffsetY`.
 
-**Global fields in GET `/api/presets`:** `playlistEnabled`, `playlistMask`, `playlistDwellMs`.
+**Clock `effectParam` flags:** bit 0 = show seconds, bit 2 = show date (`dd.mm.yyyy`). For effects, `effectParam` is 0–100 (e.g. progress bar level).
+
+**Global fields in GET `/api/presets`:** `brightness`, `playlistEnabled`, `playlistMask`, `playlistDwellMs`, `timezoneId`, `timeValid`, `timeSource` (`none` \| `browser` \| `ntp`), `apSsid`, `apIp`, `staConnected`, `staIp`, `staRssi`.
 
 ---
 
@@ -176,43 +208,19 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 ```
 main.cpp
 ├── panel_profile     HUB75 init + 104×52 pixel mapping
-├── preset_store      8 NVS-backed presets + global brightness + playlist
+├── preset_store      8 NVS-backed presets + global brightness + playlist + timezone
 ├── display_engine    Content routing, scroll, clock/countdown, playlist tick
 ├── effect_renderer   Built-in effect catalog + animation
 ├── text_renderer     Bitmap font + UTF-8 č/š/ž
-├── time_sync         SNTP when STA connected
+├── time_sync         SNTP + browser sync + POSIX timezones
 ├── gif_player        AnimatedGIF from LittleFS
 ├── wifi_manager      AP + optional STA
+├── web_auth          HTTP Basic Auth password (NVS)
 ├── web_server        REST API + serves Web UI
 └── button_input      Short press: presets; long press: brightness
 ```
 
-**Content routing** depends on `contentType`: text, GIF, effect, clock, or countdown.
-
 **Partitions** ([`partitions.csv`](partitions.csv)): 4 MB app, 2 MB LittleFS (GIF storage under `/gif/`).
-
----
-
-## Progress log (high level)
-
-Work so far has been iterative “make it work on the bench” development:
-
-- [x] Custom pixel map for 104×52 / 1/13 scan panel
-- [x] Stable DMA timing (8-bit, ~90 Hz) for flicker-sensitive text
-- [x] 8 NVS preset slots with text, GIF, and effect modes
-- [x] Web UI + REST API (AP-first, optional home Wi‑Fi)
-- [x] MatrixPortal button preset cycling + long-press brightness
-- [x] Built-in effects (flashing halves, strobe, pulse, border, progress, GoL, arrows, STOP, hazard)
-- [x] Text layout: glyph height slider, multi-row messages, scroll, č/š/ž
-- [x] Global brightness (decoupled from presets)
-- [x] Try on panel preview, slot labels, duplicate, playlist, clock/countdown
-- [x] Backup / restore JSON
-- [x] Web UX pass: preview canvas, sticky actions, toasts, context banner
-- [x] AP WPA2 password
-- [ ] OTA updates
-- [ ] Automated tests / CI
-- [ ] Security hardening (auth on Web UI, unique AP password per device)
-- [ ] Native mobile app
 
 ---
 
@@ -220,9 +228,10 @@ Work so far has been iterative “make it work on the bench” development:
 
 | Setting | Location |
 |---------|----------|
-| AP SSID / password | [`src/wifi_manager.cpp`](src/wifi_manager.cpp) |
+| AP password (build time) | `build_flags = -DMATRIXSIGN_AP_PASSWORD=\"...\"` in [`platformio.ini`](platformio.ini) |
+| AP SSID | [`src/wifi_manager.cpp`](src/wifi_manager.cpp) (`MatrixSign`) |
+| Web UI password | Generated on first boot; change in UI or NVS key `webPass` in namespace `matrixsign` |
 | Default brightness | `GLOBAL_BRIGHTNESS_DEFAULT` in [`src/preset_store.h`](src/preset_store.h) |
-| Playlist dwell default | `PLAYLIST_DWELL_MS_DEFAULT` in [`src/preset_store.h`](src/preset_store.h) |
 | Effect timing / colours | [`src/effect_renderer.cpp`](src/effect_renderer.cpp) |
 | GPIO map | [`src/panel_profile.cpp`](src/panel_profile.cpp) |
 
@@ -243,7 +252,7 @@ See [`platformio.ini`](platformio.ini):
 
 ## License
 
-No license file is included yet. Treat as **all rights reserved / use at your own risk** until one is added.
+[MIT License](LICENSE) — Copyright (c) 2026 MatrixSign contributors.
 
 ---
 

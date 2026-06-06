@@ -3,9 +3,13 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 
+#ifndef MATRIXSIGN_AP_PASSWORD
+#define MATRIXSIGN_AP_PASSWORD "matrixsign"
+#endif
+
 namespace {
 constexpr char kApSsid[] = "MatrixSign";
-constexpr char kApPassword[] = "matrixsign";
+constexpr char kApPassword[] = MATRIXSIGN_AP_PASSWORD;
 const IPAddress kApIp(192, 168, 4, 1);
 const IPAddress kApGateway(192, 168, 4, 1);
 const IPAddress kApNetmask(255, 255, 255, 0);

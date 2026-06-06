@@ -5,6 +5,7 @@
 #include "panel_profile.h"
 #include "preset_store.h"
 #include "time_sync.h"
+#include "web_auth.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 
@@ -45,6 +46,7 @@ void setup() {
   displayEngine.begin(panelProfileVirtual(), panelProfileDma(), &presetStore);
   buttonInputBegin(&displayEngine);
   timeSyncBegin();
+  webAuthBegin();
 
   if (!wifiManagerBegin()) {
     Serial.println("Wi-Fi init failed");

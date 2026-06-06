@@ -234,6 +234,14 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </details>
 
 <details>
+<summary>Security</summary>
+<p class="hint">Web UI uses HTTP Basic Auth. Default username <strong>admin</strong>. On first boot the password is printed to the serial monitor (115200 baud).</p>
+<label for="newAdminPass">New Web UI password</label>
+<input type="password" id="newAdminPass" autocomplete="new-password" minlength="8">
+<button type="button" class="btn-secondary" id="changeAdminPass">Change Web UI password</button>
+</details>
+
+<details>
 <summary>Home Wi-Fi (optional)</summary>
 <label for="ssid">SSID</label>
 <input type="text" id="ssid" autocomplete="off">
@@ -387,9 +395,13 @@ function setBusy(v){
 }
 
 async function apiJson(url,opts={}){
+  opts.credentials=opts.credentials||"include";
   const r=await fetch(url,opts);
   let data={};
   try{data=await r.json();}catch(e){}
+  if(r.status===401){
+    throw new Error("Login required — username admin, password from serial monitor (115200 baud) or Security section");
+  }
   if(!r.ok){
     const err=data.error||(`Request failed (${r.status})`);
     throw new Error(err);
@@ -716,7 +728,7 @@ function updateBanner(c){
     $("banner").innerHTML=`<strong>Connected</strong> · ${c.staIp||""}${c.staRssi!=null?` · ${c.staRssi} dBm`:""} · open <strong>http://${c.staIp||""}/</strong>`;
     return;
   }
-  $("banner").innerHTML=`<strong>Field mode:</strong> join Wi-Fi <strong>${c.apSsid||"MatrixSign"}</strong>, then open <strong>http://${c.apIp||"192.168.4.1"}</strong><details style="margin-top:8px"><summary>AP password</summary><p class="hint" style="margin:6px 0 0">${c.apPassword||"matrixsign"}</p></details>`;
+  $("banner").innerHTML=`<strong>Field mode:</strong> join Wi-Fi <strong>${c.apSsid||"MatrixSign"}</strong> (password set at build time — see README), then open <strong>http://${c.apIp||"192.168.4.1"}</strong>. Web UI login: user <strong>admin</strong>, password from serial on first boot.`;
 }
 
 function updateConnBar(c){
@@ -1019,7 +1031,7 @@ async function duplicateSlot(){
 async function downloadBackup(){
   setBusy(true);
   try{
-    const r=await fetch("/api/backup");
+    const r=await fetch("/api/backup",{credentials:"include"});
     if(!r.ok)throw new Error(`Request failed (${r.status})`);
     const blob=await r.blob();
     const a=document.createElement("a");
@@ -1136,7 +1148,7 @@ $("uploadGif").addEventListener("click",async()=>{
   try{
     const fd=new FormData();
     fd.append("file",f,f.name);
-    const r=await fetch(`/api/presets/gif?id=${selectedSlot}`,{method:"POST",body:fd});
+    const r=await fetch(`/api/presets/gif?id=${selectedSlot}`,{method:"POST",body:fd,credentials:"include"});
     let data={};try{data=await r.json();}catch(e){}
     if(!r.ok)throw new Error(data.error||"Upload failed");
     contentType="gif";showSections();
@@ -1156,6 +1168,19 @@ $("removeGif").addEventListener("click",async()=>{
   setBusy(false);
 });
 
+async function changeAdminPassword(){
+  const password=$("newAdminPass").value;
+  if(!password||password.length<8){showToast("Password must be at least 8 characters",true);return;}
+  setBusy(true);
+  try{
+    await apiJson("/api/auth/password",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password})});
+    $("newAdminPass").value="";
+    showToast("Web UI password changed");
+  }catch(e){showToast(e.message,true);}
+  setBusy(false);
+}
+
+$("changeAdminPass").addEventListener("click",changeAdminPassword);
 $("connectWifi").addEventListener("click",async()=>{
   setBusy(true);
   try{
