@@ -1,6 +1,6 @@
 # MatrixSign
 
-Firmware for an **Adafruit MatrixPortal ESP32-S3** driving a **P3.076 104×52 px, 1/13 scan** HUB75 LED panel. Configure messages, GIFs, and built-in effects from a phone or laptop over Wi‑Fi.
+Firmware for an **Adafruit MatrixPortal ESP32-S3** driving a **P3.076 104×52 px, 1/13 scan** HUB75 LED panel. Configure messages, GIFs, clock/countdown, and built-in effects from a phone or laptop over Wi‑Fi.
 
 ---
 
@@ -29,9 +29,14 @@ Contributions and hardening are welcome, but expect rough edges.
 |------|--------|
 | MCU board | Adafruit MatrixPortal ESP32-S3 |
 | Panel | P3.076, **104×52** pixels, **1/13 scan** |
-| Buttons | **UP** = GPIO 6, **DOWN** = GPIO 7 (cycle presets) |
+| Buttons | **UP** = GPIO 6, **DOWN** = GPIO 7 |
 | Pixel mapping | Custom `ZnMirrorZStripe`-style map, tile height 13 ([`src/panel_profile.cpp`](src/panel_profile.cpp)) |
 | DMA | 16 MHz, 8-bit colour, ~90 Hz refresh |
+
+**Button behaviour:**
+
+- **Short press UP / DOWN** — cycle to previous / next preset slot.
+- **Long press (~600 ms) UP / DOWN** — increase / decrease global brightness by 10% (repeats while held; stops at 1% / 100%).
 
 ---
 
@@ -69,44 +74,63 @@ Each slot stores one **content type** and its settings in NVS (non-volatile stor
 
 | Type | Description |
 |------|-------------|
-| **Message** | Scrolling or static text, 1–4 rows, configurable block height (8–52 px), colour |
+| **Message** | Scrolling or static text, 1–4 rows, glyph height 8–48 px, colour; UTF‑8 **č, š, ž** |
+| **Clock** | HH:MM time display (needs home Wi‑Fi + NTP) |
+| **Countdown** | Countdown to a target time (NTP) or a set **duration** (no Wi‑Fi; starts when slot is shown) |
 | **GIF** | Animated GIF from LittleFS (best **104×52**, max **256 KB** per slot) |
 | **Effect** | Built-in full-panel animation (see below) |
 
-- **Save slot** — writes the editor to the selected slot (1–8).
-- **Show on panel** — switches the live display to the selected slot.
-- **Apply edits to live slot** — when editing a different slot than the one on air, pushes the form to the **currently live** slot only.
+Each slot also has an optional **label** (shown in the preset grid). **Duplicate slot** copies a slot’s settings and GIF file to another slot.
 
-**UP / DOWN** buttons on the MatrixPortal cycle the active preset on the device.
+**Sticky bar actions:**
+
+- **Try on panel** — show editor content on the panel without saving (`POST /api/preview`).
+- **Show saved** — activate the saved slot on the panel.
+- **Save slot** — write the editor to the selected slot (1–8).
+
+### Playlist (auto-rotate)
+
+Enable **Auto-rotate presets** to cycle checked slots on the panel after a configurable dwell time. Manual UP/DOWN still switches slots; long press still adjusts brightness.
 
 ### Global brightness
 
-Panel brightness (**1–100%**) is **global**, not per preset. It is stored separately in NVS and applied immediately from the Web UI slider (via `/api/brightness`).
+Panel brightness (**1–100%**) is **global**, not per preset. Adjust from the Web UI slider or long-press UP/DOWN on the device. Stored in NVS via `/api/brightness`.
 
 ### Built-in effects
 
 | ID | Label | Behaviour (summary) |
 |----|-------|---------------------|
-| `bright_white` | Bright white | Full panel white |
-| `blue_emergency` | Blue emergency | Left/right halves: 2 flashes per side, then switch |
-| `yellow_emergency` | Yellow emergency | Same pattern, amber/yellow |
-| `arrow_left` | Arrows left | Full-height yellow chevrons stepping horizontally ← |
+| `bright_white` | Bright white | Full panel solid fill |
+| `flashing_halves` | Flashing halves | Left/right halves flash alternately (replaces legacy `blue_emergency` / `yellow_emergency`) |
+| `full_strobe` | Full strobe | Full-panel flash |
+| `pulse` | Pulse | Brightness pulse |
+| `border_chase` | Border chase | Animated border |
+| `progress_bar` | Progress bar | Horizontal fill; level set by `effectParam` (0–100) |
+| `game_of_life` | Game of Life | 2×2 px cells, Conway’s rules |
+| `arrow_left` | Arrows left | Full-height chevrons stepping ← |
 | `arrow_right` | Arrows right | Same, direction → |
-| `stop` | Stop | Red background, white **STOP** (large text) |
-| `hazard_triangle` | Hazard triangle | Amber equilateral triangle, red border, **!** |
+| `stop` | Stop | Red background, white **STOP** (fixed colours) |
+| `hazard_triangle` | Hazard triangle | Amber triangle, red border, **!** (fixed colours) |
+
+Monochrome effects (all except STOP and hazard) use the preset **colour** field. Picking an effect in the Web UI applies a sensible default colour.
 
 Effect rendering: [`src/effect_renderer.cpp`](src/effect_renderer.cpp).
+
+### Backup and restore
+
+Download a JSON backup of all slots, labels, playlist, and brightness. Restore overwrites device configuration from a backup file.
 
 ### Web UI
 
 Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 
 - Context-aware banner (AP vs home Wi‑Fi)
-- Preset grid with short labels, live/editing/unsaved indicators
+- Preset grid with labels, live/editing/unsaved indicators
+- Optional slot label, duplicate, playlist controls
 - **104×52 preview canvas** (approximate; effects/GIF are simplified)
-- Text size cheatsheet (block height × rows → glyph size)
+- Glyph-height slider with optimal-size suggestion
 - Scroll speed presets (Slow / Normal / Fast)
-- Sticky **Save** / **Show on panel** actions
+- Sticky **Try on panel** / **Show saved** / **Save slot**
 - Toast notifications for API feedback
 
 ### Wi‑Fi
@@ -114,6 +138,7 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 - **AP-first:** `MatrixSign` @ `192.168.4.1` (WPA2)
 - **Optional STA:** saved credentials via Web UI; reconnects on boot in background (30 s timeout)
 - **Forget home Wi‑Fi** clears saved STA credentials
+- **NTP:** `pool.ntp.org`, CET timezone when STA is connected ([`src/time_sync.cpp`](src/time_sync.cpp))
 
 ---
 
@@ -122,11 +147,16 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | Web UI |
-| GET | `/api/presets` | All slots + `activeIndex` + `brightness` + Wi‑Fi status |
+| GET | `/api/presets` | All slots + `activeIndex` + `brightness` + playlist + Wi‑Fi status |
 | POST | `/api/presets` | Save slot (`id` + preset fields) |
 | POST | `/api/presets/select` | Activate slot (`id`) |
+| POST | `/api/presets/duplicate` | Copy slot (`from`, `to`) |
+| POST | `/api/preview` | Show editor content on panel without saving |
+| POST | `/api/playlist` | Set playlist (`enabled`, `slotMask`, `dwellMs`) |
+| GET | `/api/backup` | Export full configuration JSON |
+| POST | `/api/restore` | Restore from backup JSON |
 | GET | `/api/config` | Active preset fields + status |
-| POST | `/api/config` | Apply fields to **live** preset |
+| POST | `/api/config` | Apply fields to **live** preset (legacy; Web UI uses preview + save instead) |
 | GET | `/api/brightness` | Global brightness |
 | POST | `/api/brightness` | Set global brightness (`brightness`: 1–100) |
 | GET | `/api/effects` | Effect catalog |
@@ -135,7 +165,9 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 | POST | `/api/wifi/connect` | Save STA credentials and connect |
 | POST | `/api/wifi/reset` | Forget STA credentials |
 
-Preset JSON fields (no per-preset brightness): `contentType`, `effectId`, `textHeightPx`, `rowCount`, `text`, `scroll`, `scrollDelayMs`, `color` (`#RRGGBB`).
+**Preset JSON fields:** `contentType`, `effectId`, `textHeightPx`, `rowCount`, `text`, `label`, `scroll`, `scrollDelayMs`, `color` (`#RRGGBB`), `effectParam` (0–100), `countdownEndUnix` (Unix seconds, target mode), `countdownDurationSec` (seconds, duration mode).
+
+**Global fields in GET `/api/presets`:** `playlistEnabled`, `playlistMask`, `playlistDwellMs`.
 
 ---
 
@@ -144,16 +176,18 @@ Preset JSON fields (no per-preset brightness): `contentType`, `effectId`, `textH
 ```
 main.cpp
 ├── panel_profile     HUB75 init + 104×52 pixel mapping
-├── preset_store      8 NVS-backed presets + global brightness
-├── display_engine    Routes content: effect → GIF → text; scroll tick
+├── preset_store      8 NVS-backed presets + global brightness + playlist
+├── display_engine    Content routing, scroll, clock/countdown, playlist tick
 ├── effect_renderer   Built-in effect catalog + animation
+├── text_renderer     Bitmap font + UTF-8 č/š/ž
+├── time_sync         SNTP when STA connected
 ├── gif_player        AnimatedGIF from LittleFS
 ├── wifi_manager      AP + optional STA
 ├── web_server        REST API + serves Web UI
-└── button_input      UP/DOWN preset cycle
+└── button_input      Short press: presets; long press: brightness
 ```
 
-**Content priority on a preset:** Effect (if set) → GIF (if file exists) → Text.
+**Content routing** depends on `contentType`: text, GIF, effect, clock, or countdown.
 
 **Partitions** ([`partitions.csv`](partitions.csv)): 4 MB app, 2 MB LittleFS (GIF storage under `/gif/`).
 
@@ -167,11 +201,13 @@ Work so far has been iterative “make it work on the bench” development:
 - [x] Stable DMA timing (8-bit, ~90 Hz) for flicker-sensitive text
 - [x] 8 NVS preset slots with text, GIF, and effect modes
 - [x] Web UI + REST API (AP-first, optional home Wi‑Fi)
-- [x] MatrixPortal button preset cycling
-- [x] Seven built-in effects (emergency strobes, arrows, STOP, hazard)
-- [x] Text layout: pixel block height, multi-row messages, scroll
+- [x] MatrixPortal button preset cycling + long-press brightness
+- [x] Built-in effects (flashing halves, strobe, pulse, border, progress, GoL, arrows, STOP, hazard)
+- [x] Text layout: glyph height slider, multi-row messages, scroll, č/š/ž
 - [x] Global brightness (decoupled from presets)
-- [x] Web UX pass: preview canvas, clearer slot actions, toasts, context banner
+- [x] Try on panel preview, slot labels, duplicate, playlist, clock/countdown
+- [x] Backup / restore JSON
+- [x] Web UX pass: preview canvas, sticky actions, toasts, context banner
 - [x] AP WPA2 password
 - [ ] OTA updates
 - [ ] Automated tests / CI
@@ -186,6 +222,7 @@ Work so far has been iterative “make it work on the bench” development:
 |---------|----------|
 | AP SSID / password | [`src/wifi_manager.cpp`](src/wifi_manager.cpp) |
 | Default brightness | `GLOBAL_BRIGHTNESS_DEFAULT` in [`src/preset_store.h`](src/preset_store.h) |
+| Playlist dwell default | `PLAYLIST_DWELL_MS_DEFAULT` in [`src/preset_store.h`](src/preset_store.h) |
 | Effect timing / colours | [`src/effect_renderer.cpp`](src/effect_renderer.cpp) |
 | GPIO map | [`src/panel_profile.cpp`](src/panel_profile.cpp) |
 

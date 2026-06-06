@@ -3,12 +3,12 @@
 #include "effect_renderer.h"
 #include "gif_player.h"
 #include "panel_profile.h"
+#include "text_renderer.h"
+#include "time_sync.h"
 
 #include <cstring>
 
 namespace {
-constexpr unsigned long kFlashMs = 400;
-
 int clampInt(int value, int minValue, int maxValue) {
   if (value < minValue) {
     return minValue;
@@ -18,6 +18,70 @@ int clampInt(int value, int minValue, int maxValue) {
   }
   return value;
 }
+
+SignPreset normalizePreset(SignPreset preset) {
+  if (preset.rowCount < 1) {
+    preset.rowCount = 1;
+  }
+  if (preset.rowCount > 4) {
+    preset.rowCount = 4;
+  }
+  preset.textHeightPx = clampTextHeightPx(preset.textHeightPx);
+  if (preset.scrollDelayMs < 10) {
+    preset.scrollDelayMs = 10;
+  }
+  preset.contentOffsetX = clampContentOffset(preset.contentOffsetX);
+  preset.contentOffsetY = clampContentOffset(preset.contentOffsetY);
+  return preset;
+}
+int fitTimeTextSize(const char *text) {
+  const int unitWidth = textLinePixelWidth(text, 1);
+  if (unitWidth <= 0) {
+    return 1;
+  }
+  return clampInt(PANEL_RES_X / unitWidth, 1, 6);
+}
+
+constexpr uint8_t kClockFlagSeconds = 1;
+constexpr uint8_t kClockFlagDate = 2;
+
+bool clockShowSeconds(uint8_t effectParam) {
+  return (effectParam & kClockFlagSeconds) != 0 || effectParam > 3;
+}
+
+bool clockShowDate(uint8_t effectParam) {
+  return (effectParam & kClockFlagDate) != 0;
+}
+
+void layoutClockLines(const char *timeStr, const char *dateStr, bool showDate, int &timeSize,
+                      int &dateSize, int &timeY, int &dateY) {
+  timeSize = fitTimeTextSize(timeStr);
+  if (!showDate || dateStr[0] == '\0') {
+    dateSize = 0;
+    timeY = (PANEL_RES_Y - kTextBodyBandRows * timeSize) / 2;
+    dateY = 0;
+    return;
+  }
+
+  dateSize = fitTimeTextSize(dateStr);
+  int gap = timeSize;
+  int totalH = kTextBodyBandRows * timeSize + gap + kTextBodyBandRows * dateSize;
+  while (totalH > PANEL_RES_Y && (timeSize > 1 || dateSize > 1)) {
+    if (timeSize >= dateSize && timeSize > 1) {
+      timeSize--;
+    } else if (dateSize > 1) {
+      dateSize--;
+    } else {
+      break;
+    }
+    gap = timeSize;
+    totalH = kTextBodyBandRows * timeSize + gap + kTextBodyBandRows * dateSize;
+  }
+
+  const int top = (PANEL_RES_Y - totalH) / 2;
+  timeY = top;
+  dateY = top + kTextBodyBandRows * timeSize + gap;
+}
 }  // namespace
 
 void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store) {
@@ -26,6 +90,7 @@ void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, P
   store_ = store;
   gifPlayerBegin(panel_);
   effectRendererBegin(panel_);
+  playlistSlotSinceMs_ = millis();
   selectPreset(store_->activeIndex());
 }
 
@@ -49,13 +114,33 @@ void DisplayEngine::setGlobalBrightness(uint8_t percent) {
   applyBrightness(store_->globalBrightness());
 }
 
+void DisplayEngine::adjustGlobalBrightness(int delta) {
+  if (!store_ || delta == 0) {
+    return;
+  }
+  const int current = static_cast<int>(store_->globalBrightness());
+  if (delta > 0 && current >= 100) {
+    return;
+  }
+  if (delta < 0 && current <= 1) {
+    return;
+  }
+  int next = current + delta;
+  if (next < 1) {
+    next = 1;
+  } else if (next > 100) {
+    next = 100;
+  }
+  setGlobalBrightness(static_cast<uint8_t>(next));
+}
+
 void DisplayEngine::selectPreset(int index) {
   if (!store_) {
     return;
   }
   store_->setActiveIndex(index);
+  playlistSlotSinceMs_ = millis();
   applyActivePreset();
-  showPresetFlash(index);
 }
 
 void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persist) {
@@ -63,25 +148,38 @@ void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persis
     return;
   }
 
-  SignPreset normalized = preset;
-  if (normalized.rowCount < 1) {
-    normalized.rowCount = 1;
-  }
-  if (normalized.rowCount > 4) {
-    normalized.rowCount = 4;
-  }
-  normalized.textHeightPx = clampTextHeightPx(normalized.textHeightPx);
+  const SignPreset normalized = normalizePreset(preset);
 
-  store_->set(index, normalized);
-  if (index == activeIndex()) {
-    applyActivePreset();
+  if (persist) {
+    store_->set(index, normalized);
   }
+  if (index == activeIndex()) {
+    runtime_ = normalized;
+    applyRuntimePreset(index);
+  }
+}
+
+void DisplayEngine::previewOnPanel(const SignPreset &preset, int gifSlotIndex) {
+  if (!store_ || gifSlotIndex < 0 || gifSlotIndex >= PRESET_COUNT) {
+    return;
+  }
+
+  runtime_ = normalizePreset(preset);
+  applyRuntimePreset(gifSlotIndex);
 }
 
 void DisplayEngine::resolveActiveContentType() {
   if (runtime_.contentType == ContentType::Effect &&
       static_cast<EffectId>(runtime_.effectId) != EffectId::None) {
     activeContentType_ = ContentType::Effect;
+    return;
+  }
+  if (runtime_.contentType == ContentType::Clock) {
+    activeContentType_ = ContentType::Clock;
+    return;
+  }
+  if (runtime_.contentType == ContentType::Countdown) {
+    activeContentType_ = ContentType::Countdown;
     return;
   }
   if (runtime_.contentType == ContentType::Gif && shouldPlayGif(runtime_)) {
@@ -93,6 +191,10 @@ void DisplayEngine::resolveActiveContentType() {
 
 void DisplayEngine::applyActivePreset() {
   runtime_ = store_->get(activeIndex());
+  applyRuntimePreset(activeIndex());
+}
+
+void DisplayEngine::applyRuntimePreset(int gifSlotIndex) {
   if (runtime_.scrollDelayMs < 10) {
     runtime_.scrollDelayMs = 10;
   }
@@ -108,7 +210,7 @@ void DisplayEngine::applyActivePreset() {
   scrollOffset_ = PANEL_RES_X;
   dirty_ = true;
 
-  const String slotPath = store_->gifPathForSlot(activeIndex());
+  const String slotPath = store_->gifPathForSlot(gifSlotIndex);
   slotPath.toCharArray(runtime_.gifPath, sizeof(runtime_.gifPath));
 
   resolveActiveContentType();
@@ -116,7 +218,16 @@ void DisplayEngine::applyActivePreset() {
   panel_->fillScreen(0);
 
   if (activeContentType_ == ContentType::Effect) {
-    effectRendererApply(static_cast<EffectId>(runtime_.effectId));
+    effectRendererApply(static_cast<EffectId>(runtime_.effectId), runtime_.colorR, runtime_.colorG,
+                        runtime_.colorB, runtime_.effectParam);
+    return;
+  }
+
+  if (activeContentType_ == ContentType::Clock || activeContentType_ == ContentType::Countdown) {
+    countdownStartedMs_ = millis();
+    dirty_ = true;
+    lastScrollMs_ = millis();
+    redrawTimeBlock();
     return;
   }
 
@@ -128,8 +239,8 @@ void DisplayEngine::applyActivePreset() {
     }
   }
 
-  textLayout_ = computeTextLayout(runtime_);
   textLineCount_ = splitTextLines(runtime_, textLines_, runtime_.rowCount);
+  textLayout_ = computeTextLayout(runtime_, textLines_, textLineCount_);
 }
 
 bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
@@ -147,17 +258,53 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   dma_->setBrightness8(level);
 }
 
-DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &preset) const {
+DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &preset,
+                                                           char lines[][201],
+                                                           int lineCount) const {
   TextLayout layout;
   layout.rowCount = clampInt(preset.rowCount, 1, 4);
   layout.blockHeight = clampTextHeightPx(preset.textHeightPx);
   layout.blockTop = (PANEL_RES_Y - layout.blockHeight) / 2;
   const int lineHeight = layout.blockHeight / layout.rowCount;
-  layout.textSize = clampInt(lineHeight / 8, 1, 6);
+  layout.textSize = clampInt(lineHeight / kTextBodyBandRows, 1, 6);
 
-  const int glyphHeight = 8 * layout.textSize;
+  const int caronHeight = kTextCaronBandRows * layout.textSize;
+  const int bodyHeight = kTextBodyBandRows * layout.textSize;
+  const int rows = clampInt(lineCount, 1, layout.rowCount);
+
+  bool rowHasCaron[4] = {};
+  for (int i = 0; i < rows; i++) {
+    rowHasCaron[i] = textLineHasCaron(lines[i]);
+  }
+
+  int totalHeight = 0;
+  for (int i = 0; i < rows; i++) {
+    if (i > 0 && rowHasCaron[i]) {
+      totalHeight += caronHeight;
+    }
+    totalHeight += rowHasCaron[i] ? (caronHeight + bodyHeight) : bodyHeight;
+  }
+
+  int y = layout.blockTop + (layout.blockHeight - totalHeight) / 2;
+  if (y < layout.blockTop) {
+    y = layout.blockTop;
+  }
+
   for (int i = 0; i < layout.rowCount; i++) {
-    layout.rowY[i] = layout.blockTop + i * lineHeight + (lineHeight - glyphHeight) / 2;
+    if (i >= rows) {
+      layout.rowY[i] = y;
+      continue;
+    }
+    if (i > 0 && rowHasCaron[i]) {
+      y += caronHeight;
+    }
+    if (rowHasCaron[i]) {
+      layout.rowY[i] = y + caronHeight;
+      y += caronHeight + bodyHeight;
+    } else {
+      layout.rowY[i] = y;
+      y += bodyHeight;
+    }
   }
   return layout;
 }
@@ -190,7 +337,7 @@ int DisplayEngine::textBlockPixelWidth(const SignPreset &preset, const TextLayou
                                        char lines[][201], int lineCount) const {
   int maxWidth = 0;
   for (int i = 0; i < lineCount; i++) {
-    const int width = static_cast<int>(strlen(lines[i])) * 6 * layout.textSize;
+    const int width = textLinePixelWidth(lines[i], layout.textSize);
     if (width > maxWidth) {
       maxWidth = width;
     }
@@ -209,34 +356,135 @@ void DisplayEngine::redrawTextBlock() {
   }
 
   panel_->fillRect(0, textLayout_.blockTop, PANEL_RES_X, textLayout_.blockHeight, 0);
-  panel_->setTextSize(textLayout_.textSize);
-  panel_->setTextWrap(false);
-  panel_->setTextColor(textColor565(runtime_));
+  const uint16_t color = textColor565(runtime_);
 
   for (int i = 0; i < textLineCount_; i++) {
     int x = scrollOffset_;
     if (!runtime_.scroll) {
-      const int width = static_cast<int>(strlen(textLines_[i])) * 6 * textLayout_.textSize;
+      const int width = textLinePixelWidth(textLines_[i], textLayout_.textSize);
       x = (PANEL_RES_X - width) / 2;
     }
-    panel_->setCursor(x, textLayout_.rowY[i]);
-    panel_->print(textLines_[i]);
+    x += runtime_.contentOffsetX;
+    const int y = textLayout_.rowY[i] + runtime_.contentOffsetY;
+    drawTextLine(panel_, x, y, textLayout_.textSize, color, textLines_[i]);
   }
 }
 
-void DisplayEngine::showPresetFlash(int index) {
+void DisplayEngine::redrawTimeBlock() {
   if (!panel_) {
     return;
   }
-  flashUntilMs_ = millis() + kFlashMs;
+
   panel_->fillScreen(0);
-  panel_->setTextSize(1);
-  panel_->setTextWrap(false);
-  panel_->setTextColor(panel_->color565(180, 180, 180));
-  panel_->setCursor(36, 24);
-  panel_->print(index + 1);
-  panel_->print('/');
-  panel_->print(PRESET_COUNT);
+
+  if (activeContentType_ == ContentType::Clock) {
+    const bool showSeconds = clockShowSeconds(runtime_.effectParam);
+    const bool showDate = clockShowDate(runtime_.effectParam);
+    formatClockTime(timeLine_, sizeof(timeLine_), showSeconds);
+    if (showDate) {
+      formatClockDate(dateLine_, sizeof(dateLine_));
+    } else {
+      dateLine_[0] = '\0';
+    }
+
+    int timeSize = 1;
+    int dateSize = 0;
+    int timeY = 0;
+    int dateY = 0;
+    layoutClockLines(timeLine_, dateLine_, showDate, timeSize, dateSize, timeY, dateY);
+
+    const uint16_t color = textColor565(runtime_);
+    const int timeX = (PANEL_RES_X - textLinePixelWidth(timeLine_, timeSize)) / 2;
+    drawTextLine(panel_, timeX, timeY, timeSize, color, timeLine_);
+    if (showDate) {
+      const int dateX = (PANEL_RES_X - textLinePixelWidth(dateLine_, dateSize)) / 2;
+      drawTextLine(panel_, dateX, dateY, dateSize, color, dateLine_);
+    }
+    return;
+  } else if (runtime_.countdownDurationSec > 0) {
+    const unsigned long elapsedMs = millis() - countdownStartedMs_;
+    const long remaining =
+        static_cast<long>(runtime_.countdownDurationSec) - static_cast<long>(elapsedMs / 1000);
+    formatCountdownSeconds(timeLine_, sizeof(timeLine_), remaining);
+  } else {
+    formatCountdown(timeLine_, sizeof(timeLine_), runtime_.countdownEndUnix);
+  }
+
+  const int textSize = fitTimeTextSize(timeLine_);
+  const int width = textLinePixelWidth(timeLine_, textSize);
+  const int x = (PANEL_RES_X - width) / 2;
+  const int y = (PANEL_RES_Y - kTextBodyBandRows * textSize) / 2;
+  drawTextLine(panel_, x, y, textSize, textColor565(runtime_), timeLine_);
+}
+
+void DisplayEngine::tickTime(const SignPreset &preset) {
+  (void)preset;
+  const unsigned long now = millis();
+  if (now - lastScrollMs_ >= 1000) {
+    lastScrollMs_ = now;
+    dirty_ = true;
+  }
+  if (dirty_) {
+    redrawTimeBlock();
+    dirty_ = false;
+  }
+}
+
+void DisplayEngine::refreshTimeDisplay() {
+  if (activeContentType_ == ContentType::Clock || activeContentType_ == ContentType::Countdown) {
+    redrawTimeBlock();
+  }
+}
+
+int DisplayEngine::nextPlaylistSlot(int current) const {
+  if (!store_) {
+    return current;
+  }
+  const PlaylistSettings playlist = store_->playlist();
+  if (playlist.slotMask == 0) {
+    return current;
+  }
+
+  for (int step = 1; step <= PRESET_COUNT; step++) {
+    const int candidate = (current + step) % PRESET_COUNT;
+    if ((playlist.slotMask & (1 << candidate)) != 0) {
+      return candidate;
+    }
+  }
+  return current;
+}
+
+void DisplayEngine::tickPlaylist() {
+  if (!store_) {
+    return;
+  }
+
+  const PlaylistSettings playlist = store_->playlist();
+  if (!playlist.enabled) {
+    return;
+  }
+
+  int enabledCount = 0;
+  for (int i = 0; i < PRESET_COUNT; i++) {
+    if (playlist.slotMask & (1 << i)) {
+      enabledCount++;
+    }
+  }
+  if (enabledCount <= 1) {
+    return;
+  }
+
+  if ((playlist.slotMask & (1 << activeIndex())) == 0) {
+    selectPreset(nextPlaylistSlot(activeIndex() - 1));
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (now - playlistSlotSinceMs_ < playlist.dwellMs) {
+    return;
+  }
+
+  selectPreset(nextPlaylistSlot(activeIndex()));
 }
 
 void DisplayEngine::tickText(const SignPreset &preset) {
@@ -274,14 +522,8 @@ void DisplayEngine::tick() {
     return;
   }
 
-  if (flashUntilMs_ > 0 && millis() < flashUntilMs_) {
-    return;
-  }
-
-  if (flashUntilMs_ > 0 && millis() >= flashUntilMs_) {
-    flashUntilMs_ = 0;
-    applyActivePreset();
-  }
+  timeSyncTick();
+  tickPlaylist();
 
   switch (activeContentType_) {
     case ContentType::Effect:
@@ -289,6 +531,10 @@ void DisplayEngine::tick() {
       break;
     case ContentType::Gif:
       tickGif(runtime_);
+      break;
+    case ContentType::Clock:
+    case ContentType::Countdown:
+      tickTime(runtime_);
       break;
     case ContentType::Text:
     default:

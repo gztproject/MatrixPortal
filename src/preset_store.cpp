@@ -2,6 +2,7 @@
 
 #include "effect_renderer.h"
 #include "panel_profile.h"
+#include "time_sync.h"
 
 #include <ArduinoJson.h>
 #include <FS.h>
@@ -20,6 +21,10 @@ const char *contentTypeToString(ContentType type) {
       return "gif";
     case ContentType::Effect:
       return "effect";
+    case ContentType::Clock:
+      return "clock";
+    case ContentType::Countdown:
+      return "countdown";
     case ContentType::Text:
     default:
       return "text";
@@ -35,6 +40,12 @@ ContentType contentTypeFromString(const char *value) {
   }
   if (strcmp(value, "effect") == 0) {
     return ContentType::Effect;
+  }
+  if (strcmp(value, "clock") == 0) {
+    return ContentType::Clock;
+  }
+  if (strcmp(value, "countdown") == 0) {
+    return ContentType::Countdown;
   }
   return ContentType::Text;
 }
@@ -75,6 +86,26 @@ uint8_t clampBrightness(int value) {
   return static_cast<uint8_t>(value);
 }
 
+uint32_t clampPlaylistDwellMs(int ms) {
+  if (ms < PLAYLIST_DWELL_MS_MIN) {
+    return PLAYLIST_DWELL_MS_MIN;
+  }
+  if (ms > PLAYLIST_DWELL_MS_MAX) {
+    return PLAYLIST_DWELL_MS_MAX;
+  }
+  return static_cast<uint32_t>(ms);
+}
+
+int8_t clampContentOffset(int px) {
+  if (px < -52) {
+    return -52;
+  }
+  if (px > 52) {
+    return 52;
+  }
+  return static_cast<int8_t>(px);
+}
+
 void PresetStore::setDefaults(SignPreset &preset) const {
   preset.contentType = ContentType::Text;
   preset.effectId = 0;
@@ -82,11 +113,17 @@ void PresetStore::setDefaults(SignPreset &preset) const {
   preset.rowCount = 1;
   strncpy(preset.text, "MatrixPortal", sizeof(preset.text) - 1);
   preset.text[sizeof(preset.text) - 1] = '\0';
+  preset.label[0] = '\0';
   preset.scroll = true;
   preset.scrollDelayMs = 40;
   preset.colorR = 255;
   preset.colorG = 255;
   preset.colorB = 255;
+  preset.effectParam = 50;
+  preset.countdownEndUnix = 0;
+  preset.countdownDurationSec = 0;
+  preset.contentOffsetX = 0;
+  preset.contentOffsetY = 0;
   preset.gifPath[0] = '\0';
 }
 
@@ -164,6 +201,16 @@ void PresetStore::loadAll() {
     globalBrightness_ = clampBrightness(prefs.getUChar("brightness", kDefaultBrightness));
   }
 
+  playlist_.enabled = prefs.getBool("plOn", false);
+  playlist_.slotMask = prefs.getUChar("plMask", 0xFF);
+  playlist_.dwellMs = clampPlaylistDwellMs(prefs.getUInt("plDwell", PLAYLIST_DWELL_MS_DEFAULT));
+  strlcpy(timezoneId_, timeSyncDefaultTimezoneId(), sizeof(timezoneId_));
+  if (prefs.isKey("tzId")) {
+    String tz = prefs.getString("tzId", timezoneId_);
+    tz.toCharArray(timezoneId_, sizeof(timezoneId_));
+  }
+  strlcpy(timezoneId_, timeSyncNormalizeTimezoneId(timezoneId_), sizeof(timezoneId_));
+
   for (int i = 0; i < PRESET_COUNT; i++) {
     const String key = String("p") + i;
     const String json = prefs.getString(key.c_str(), "");
@@ -181,6 +228,9 @@ void PresetStore::loadAll() {
     if (doc["text"].is<const char *>()) {
       strlcpy(preset.text, doc["text"], sizeof(preset.text));
     }
+    if (doc["label"].is<const char *>()) {
+      strlcpy(preset.label, doc["label"], sizeof(preset.label));
+    }
     preset.scroll = doc["scroll"] | preset.scroll;
     preset.scrollDelayMs = doc["scrollDelayMs"] | preset.scrollDelayMs;
     if (doc["brightness"].is<int>() && i == activeIndex_) {
@@ -189,6 +239,15 @@ void PresetStore::loadAll() {
     preset.colorR = doc["colorR"] | preset.colorR;
     preset.colorG = doc["colorG"] | preset.colorG;
     preset.colorB = doc["colorB"] | preset.colorB;
+    preset.effectParam = doc["effectParam"] | preset.effectParam;
+    preset.countdownEndUnix = doc["countdownEndUnix"] | preset.countdownEndUnix;
+    preset.countdownDurationSec = doc["countdownDurationSec"] | preset.countdownDurationSec;
+    if (doc["contentOffsetX"].is<int>()) {
+      preset.contentOffsetX = clampContentOffset(doc["contentOffsetX"].as<int>());
+    }
+    if (doc["contentOffsetY"].is<int>()) {
+      preset.contentOffsetY = clampContentOffset(doc["contentOffsetY"].as<int>());
+    }
     if (doc["gifPath"].is<const char *>()) {
       strlcpy(preset.gifPath, doc["gifPath"], sizeof(preset.gifPath));
     }
@@ -220,6 +279,7 @@ void PresetStore::loadAll() {
     saveGlobalBrightness();
   }
 
+  timeSyncApplyTimezone(timezoneId_);
   prefs.end();
 }
 
@@ -243,11 +303,17 @@ void PresetStore::savePreset(int index) {
   doc["textHeightPx"] = presets_[index].textHeightPx;
   doc["rowCount"] = presets_[index].rowCount;
   doc["text"] = presets_[index].text;
+  doc["label"] = presets_[index].label;
   doc["scroll"] = presets_[index].scroll;
   doc["scrollDelayMs"] = presets_[index].scrollDelayMs;
   doc["colorR"] = presets_[index].colorR;
   doc["colorG"] = presets_[index].colorG;
   doc["colorB"] = presets_[index].colorB;
+  doc["effectParam"] = presets_[index].effectParam;
+  doc["countdownEndUnix"] = presets_[index].countdownEndUnix;
+  doc["countdownDurationSec"] = presets_[index].countdownDurationSec;
+  doc["contentOffsetX"] = presets_[index].contentOffsetX;
+  doc["contentOffsetY"] = presets_[index].contentOffsetY;
   doc["gifPath"] = presets_[index].gifPath;
 
   String json;
@@ -269,6 +335,93 @@ void PresetStore::saveActiveIndex() {
   }
   prefs.putInt("active", activeIndex_);
   prefs.end();
+}
+
+void PresetStore::savePlaylist() {
+  Preferences prefs;
+  if (!prefs.begin(kNs, false)) {
+    return;
+  }
+  prefs.putBool("plOn", playlist_.enabled);
+  prefs.putUChar("plMask", playlist_.slotMask);
+  prefs.putUInt("plDwell", playlist_.dwellMs);
+  prefs.end();
+}
+
+void PresetStore::saveTimezoneId() {
+  Preferences prefs;
+  if (!prefs.begin(kNs, false)) {
+    return;
+  }
+  prefs.putString("tzId", timezoneId_);
+  prefs.end();
+}
+
+bool PresetStore::duplicateSlot(int fromIndex, int toIndex) {
+  if (fromIndex < 0 || fromIndex >= PRESET_COUNT || toIndex < 0 || toIndex >= PRESET_COUNT ||
+      fromIndex == toIndex) {
+    return false;
+  }
+
+  presets_[toIndex] = presets_[fromIndex];
+  const String toPath = gifPathForSlot(toIndex);
+  toPath.toCharArray(presets_[toIndex].gifPath, sizeof(presets_[toIndex].gifPath));
+
+  const String fromPath = gifPathForSlot(fromIndex);
+  if (LittleFS.exists(fromPath)) {
+    if (LittleFS.exists(toPath)) {
+      LittleFS.remove(toPath);
+    }
+    File in = LittleFS.open(fromPath, "r");
+    if (!in) {
+      return false;
+    }
+    File out = LittleFS.open(toPath, "w");
+    if (!out) {
+      in.close();
+      return false;
+    }
+    uint8_t buffer[512];
+    while (in.available()) {
+      const size_t n = in.read(buffer, sizeof(buffer));
+      if (n == 0) {
+        break;
+      }
+      out.write(buffer, n);
+    }
+    in.close();
+    out.close();
+  } else if (LittleFS.exists(toPath)) {
+    LittleFS.remove(toPath);
+  }
+
+  savePreset(toIndex);
+  return true;
+}
+
+PlaylistSettings PresetStore::playlist() const {
+  return playlist_;
+}
+
+void PresetStore::setPlaylist(const PlaylistSettings &settings, bool persist) {
+  playlist_.enabled = settings.enabled;
+  playlist_.slotMask = settings.slotMask;
+  playlist_.dwellMs = clampPlaylistDwellMs(settings.dwellMs);
+  if (persist) {
+    savePlaylist();
+  }
+}
+
+const char *PresetStore::timezoneId() const {
+  return timezoneId_;
+}
+
+void PresetStore::setTimezoneId(const char *id, bool persist) {
+  strlcpy(timezoneId_, timeSyncNormalizeTimezoneId(id), sizeof(timezoneId_));
+  timeSyncApplyTimezone(timezoneId_);
+  if (persist) {
+    saveTimezoneId();
+  }
 }
 
 void PresetStore::begin() {

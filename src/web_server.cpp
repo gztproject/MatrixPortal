@@ -3,6 +3,7 @@
 #include "effect_renderer.h"
 #include "web_ui.h"
 #include "wifi_manager.h"
+#include "time_sync.h"
 
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
@@ -50,14 +51,36 @@ void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
   obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
   obj["text"] = preset.text;
+  obj["label"] = preset.label;
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
+  obj["effectParam"] = preset.effectParam;
+  obj["countdownEndUnix"] = preset.countdownEndUnix;
+  obj["countdownDurationSec"] = preset.countdownDurationSec;
+  obj["contentOffsetX"] = preset.contentOffsetX;
+  obj["contentOffsetY"] = preset.contentOffsetY;
 
   char color[8];
   snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
   obj["color"] = color;
   obj["gifPath"] = preset.gifPath;
   obj["hasGif"] = presetStore->gifExistsForSlot(index);
+}
+
+void appendPlaylistFields(JsonObject obj) {
+  const PlaylistSettings playlist = presetStore->playlist();
+  obj["playlistEnabled"] = playlist.enabled;
+  obj["playlistMask"] = playlist.slotMask;
+  obj["playlistDwellMs"] = playlist.dwellMs;
+}
+
+void appendTimezoneFields(JsonObject obj) {
+  obj["timezoneId"] = presetStore->timezoneId();
+}
+
+void appendTimeFields(JsonObject obj) {
+  obj["timeValid"] = timeIsValid();
+  obj["timeSource"] = timeSyncSourceString(timeSyncSource());
 }
 
 bool jsonToPreset(JsonObject obj, SignPreset &preset) {
@@ -82,6 +105,9 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   if (obj["text"].is<const char *>()) {
     strlcpy(preset.text, obj["text"], sizeof(preset.text));
   }
+  if (obj["label"].is<const char *>()) {
+    strlcpy(preset.label, obj["label"], sizeof(preset.label));
+  }
   if (obj["scroll"].is<bool>()) {
     preset.scroll = obj["scroll"];
   }
@@ -95,6 +121,25 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
     preset.colorR = (rgb >> 16) & 0xFF;
     preset.colorG = (rgb >> 8) & 0xFF;
     preset.colorB = rgb & 0xFF;
+  }
+  if (obj["effectParam"].is<int>()) {
+    preset.effectParam = static_cast<uint8_t>(obj["effectParam"].as<int>());
+  }
+  if (obj["countdownEndUnix"].is<uint32_t>()) {
+    preset.countdownEndUnix = obj["countdownEndUnix"];
+  } else if (obj["countdownEndUnix"].is<int>()) {
+    preset.countdownEndUnix = static_cast<uint32_t>(obj["countdownEndUnix"].as<int>());
+  }
+  if (obj["countdownDurationSec"].is<uint32_t>()) {
+    preset.countdownDurationSec = obj["countdownDurationSec"];
+  } else if (obj["countdownDurationSec"].is<int>()) {
+    preset.countdownDurationSec = static_cast<uint32_t>(obj["countdownDurationSec"].as<int>());
+  }
+  if (obj["contentOffsetX"].is<int>()) {
+    preset.contentOffsetX = clampContentOffset(obj["contentOffsetX"].as<int>());
+  }
+  if (obj["contentOffsetY"].is<int>()) {
+    preset.contentOffsetY = clampContentOffset(obj["contentOffsetY"].as<int>());
   }
   if (preset.rowCount < 1) {
     preset.rowCount = 1;
@@ -115,6 +160,9 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
     presetToJson(presetStore->get(i), item, i);
   }
   appendGlobalBrightness(root);
+  appendPlaylistFields(root);
+  appendTimezoneFields(root);
+  appendTimeFields(root);
   appendWifiStatus(root);
 
   String body;
@@ -129,8 +177,14 @@ void appendPresetFields(JsonObject obj, const SignPreset &preset) {
   obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
   obj["text"] = preset.text;
+  obj["label"] = preset.label;
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
+  obj["effectParam"] = preset.effectParam;
+  obj["countdownEndUnix"] = preset.countdownEndUnix;
+  obj["countdownDurationSec"] = preset.countdownDurationSec;
+  obj["contentOffsetX"] = preset.contentOffsetX;
+  obj["contentOffsetY"] = preset.contentOffsetY;
   char color[8];
   snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
   obj["color"] = color;
@@ -154,6 +208,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       JsonObject item = arr.add<JsonObject>();
       item["id"] = catalog[i].id;
       item["label"] = catalog[i].label;
+      item["monochrome"] = catalog[i].monochrome;
     }
     String body;
     serializeJson(doc, body);
@@ -263,6 +318,196 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               displayEngine->applyPreset(preset, displayEngine->activeIndex());
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/preview", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int slot = doc["slot"] | doc["id"] | 0;
+              if (slot < 0 || slot >= PRESET_COUNT) {
+                request->send(400, "application/json", "{\"error\":\"invalid slot\"}");
+                return;
+              }
+              SignPreset preset = presetStore->get(slot);
+              if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
+                request->send(400, "application/json", "{\"error\":\"invalid preview\"}");
+                return;
+              }
+              displayEngine->previewOnPanel(preset, slot);
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/presets/duplicate", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int from = doc["from"] | -1;
+              const int to = doc["to"] | -1;
+              if (from < 0 || from >= PRESET_COUNT || to < 0 || to >= PRESET_COUNT) {
+                request->send(400, "application/json", "{\"error\":\"invalid slot\"}");
+                return;
+              }
+              if (!presetStore->duplicateSlot(from, to)) {
+                request->send(500, "application/json", "{\"error\":\"duplicate failed\"}");
+                return;
+              }
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/playlist", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              PlaylistSettings playlist = presetStore->playlist();
+              if (doc["enabled"].is<bool>()) {
+                playlist.enabled = doc["enabled"];
+              }
+              if (doc["slotMask"].is<int>()) {
+                playlist.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
+              }
+              if (doc["dwellMs"].is<int>()) {
+                playlist.dwellMs = clampPlaylistDwellMs(doc["dwellMs"].as<int>());
+              }
+              presetStore->setPlaylist(playlist);
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/timezone", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const char *timezoneId = doc["timezoneId"] | timeSyncDefaultTimezoneId();
+              if (!timeSyncIsKnownTimezoneId(timezoneId)) {
+                request->send(400, "application/json", "{\"error\":\"invalid timezone\"}");
+                return;
+              }
+              presetStore->setTimezoneId(timezoneId);
+              displayEngine->refreshTimeDisplay();
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/time/sync", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              time_t unixSeconds = 0;
+              if (doc["unix"].is<int>()) {
+                unixSeconds = doc["unix"].as<time_t>();
+              } else if (doc["unix"].is<uint32_t>()) {
+                unixSeconds = static_cast<time_t>(doc["unix"].as<uint32_t>());
+              } else if (doc["unixSeconds"].is<int>()) {
+                unixSeconds = doc["unixSeconds"].as<time_t>();
+              }
+              if (!timeSyncSetUnix(unixSeconds)) {
+                request->send(400, "application/json", "{\"error\":\"invalid time\"}");
+                return;
+              }
+              displayEngine->refreshTimeDisplay();
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/backup", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["activeIndex"] = presetStore->activeIndex();
+    appendGlobalBrightness(root);
+    appendPlaylistFields(root);
+    appendTimezoneFields(root);
+    appendTimeFields(root);
+    JsonArray arr = root["presets"].to<JsonArray>();
+    for (int i = 0; i < PRESET_COUNT; i++) {
+      JsonObject item = arr.add<JsonObject>();
+      presetToJson(presetStore->get(i), item, i);
+    }
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+  });
+
+  server.on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              if (doc["brightness"].is<int>()) {
+                displayEngine->setGlobalBrightness(
+                    static_cast<uint8_t>(doc["brightness"].as<int>()));
+              }
+              if (doc["playlistEnabled"].is<bool>() || doc["slotMask"].is<int>() ||
+                  doc["dwellMs"].is<int>() || doc["playlistDwellMs"].is<int>()) {
+                PlaylistSettings playlist = presetStore->playlist();
+                if (doc["playlistEnabled"].is<bool>()) {
+                  playlist.enabled = doc["playlistEnabled"];
+                }
+                if (doc["slotMask"].is<int>()) {
+                  playlist.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
+                }
+                int dwell = 0;
+                if (doc["dwellMs"].is<int>()) {
+                  dwell = doc["dwellMs"].as<int>();
+                } else if (doc["playlistDwellMs"].is<int>()) {
+                  dwell = doc["playlistDwellMs"].as<int>();
+                }
+                if (dwell > 0) {
+                  playlist.dwellMs = clampPlaylistDwellMs(dwell);
+                }
+                presetStore->setPlaylist(playlist);
+              }
+              if (doc["timezoneId"].is<const char *>()) {
+                presetStore->setTimezoneId(doc["timezoneId"]);
+              }
+              JsonArray arr = doc["presets"].as<JsonArray>();
+              if (!arr.isNull()) {
+                int i = 0;
+                for (JsonObject item : arr) {
+                  if (i >= PRESET_COUNT) {
+                    break;
+                  }
+                  SignPreset preset = presetStore->get(i);
+                  jsonToPreset(item, preset);
+                  presetStore->set(i, preset);
+                  i++;
+                }
+              }
+              displayEngine->selectPreset(presetStore->activeIndex());
+              displayEngine->refreshTimeDisplay();
               request->send(200, "application/json", "{\"ok\":true}");
             });
 

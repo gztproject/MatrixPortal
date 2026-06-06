@@ -1,10 +1,16 @@
 #include "effect_renderer.h"
 
+#include <cstring>
+
 #include "panel_profile.h"
 
 namespace {
 VirtualMatrixPanel *panel = nullptr;
 EffectId activeEffect = EffectId::None;
+uint8_t effectColorR = 255;
+uint8_t effectColorG = 255;
+uint8_t effectColorB = 255;
+uint8_t effectParam = 50;
 unsigned long lastPhaseMs = 0;
 uint8_t arrowPhase = 0;
 unsigned long lastArrowMs = 0;
@@ -24,46 +30,59 @@ struct EmergencyHalfParams {
   unsigned long holdOnMs;
 };
 
-struct EmergencyParams {
-  uint8_t r;
-  uint8_t g;
-  uint8_t b;
-  EmergencyHalfParams left;
-  EmergencyHalfParams right;
-};
-
 enum class EmergencyStep : uint8_t { FlashOn, FlashOff, HoldOn };
 
 constexpr EmergencyHalfParams kDefaultEmergencyHalf = {2, 120, 120, 0};
 
-const EmergencyParams kBlueEmergencyParams = {
-    0, 0, 255, kDefaultEmergencyHalf, kDefaultEmergencyHalf};
-const EmergencyParams kYellowEmergencyParams = {
-    255, 170, 0, kDefaultEmergencyHalf, kDefaultEmergencyHalf};
+struct EmergencyTiming {
+  EmergencyHalfParams left;
+  EmergencyHalfParams right;
+};
 
 uint8_t emergencySide = 0;
 uint8_t emergencyFlashDone = 0;
 bool emergencyLit = false;
 EmergencyStep emergencyStep = EmergencyStep::FlashOn;
-const EmergencyParams *emergencyConfig = nullptr;
+EmergencyTiming emergencyTiming = {kDefaultEmergencyHalf, kDefaultEmergencyHalf};
+bool emergencyActive = false;
+
+constexpr int kLifeCols = 52;
+constexpr int kLifeRows = 26;
+uint8_t lifeGrid[kLifeCols * kLifeRows]{};
+uint8_t lifeNext[kLifeCols * kLifeRows]{};
+unsigned long lastLifeMs = 0;
+bool strobeLit = true;
+unsigned long lastStrobeMs = 0;
+uint8_t pulsePhase = 0;
+unsigned long lastPulseMs = 0;
+uint16_t borderPos = 0;
+unsigned long lastBorderMs = 0;
 
 static const EffectInfo kCatalog[] = {
-    {"bright_white", "Bright white", EffectId::BrightWhite},
-    {"blue_emergency", "Blue emergency", EffectId::BlueEmergency},
-    {"yellow_emergency", "Yellow emergency", EffectId::YellowEmergency},
-    {"arrow_left", "Arrows left", EffectId::ArrowLeft},
-    {"arrow_right", "Arrows right", EffectId::ArrowRight},
-    {"stop", "Stop", EffectId::Stop},
-    {"hazard_triangle", "Hazard triangle", EffectId::HazardTriangle},
+    {"bright_white", "Bright fill", EffectId::BrightWhite, true},
+    {"flashing_halves", "Flashing halves", EffectId::BlueEmergency, true},
+    {"full_strobe", "Full strobe", EffectId::FullStrobe, true},
+    {"pulse", "Pulse", EffectId::Pulse, true},
+    {"border_chase", "Border chase", EffectId::BorderChase, true},
+    {"progress_bar", "Progress bar", EffectId::ProgressBar, true},
+    {"game_of_life", "Game of Life", EffectId::GameOfLife, true},
+    {"arrow_left", "Arrows left", EffectId::ArrowLeft, true},
+    {"arrow_right", "Arrows right", EffectId::ArrowRight, true},
+    {"stop", "Stop", EffectId::Stop, false},
+    {"hazard_triangle", "Hazard triangle", EffectId::HazardTriangle, false},
 };
 
-void drawEmergency(const EmergencyParams &params, uint8_t side, bool lit) {
+uint16_t effectColor565() {
+  return panel->color565(effectColorR, effectColorG, effectColorB);
+}
+
+void drawEmergency(uint8_t side, bool lit) {
   panel->fillScreen(0);
   if (!lit) {
     return;
   }
 
-  const uint16_t color = panel->color565(params.r, params.g, params.b);
+  const uint16_t color = effectColor565();
   const int halfWidth = PANEL_RES_X / 2;
   if (side == 0) {
     panel->fillRect(0, 0, halfWidth, PANEL_RES_Y, color);
@@ -72,14 +91,16 @@ void drawEmergency(const EmergencyParams &params, uint8_t side, bool lit) {
   }
 }
 
-void resetEmergencyState(const EmergencyParams &params) {
-  emergencyConfig = &params;
+void resetEmergencyState() {
+  emergencyTiming.left = kDefaultEmergencyHalf;
+  emergencyTiming.right = kDefaultEmergencyHalf;
+  emergencyActive = true;
   emergencySide = 0;
   emergencyFlashDone = 0;
   emergencyLit = true;
   emergencyStep = EmergencyStep::FlashOn;
   lastPhaseMs = millis();
-  drawEmergency(params, emergencySide, emergencyLit);
+  drawEmergency(emergencySide, emergencyLit);
 }
 
 void advanceEmergencySide() {
@@ -90,12 +111,12 @@ void advanceEmergencySide() {
 }
 
 bool tickEmergency() {
-  if (!emergencyConfig) {
+  if (!emergencyActive) {
     return false;
   }
 
   const EmergencyHalfParams &half =
-      (emergencySide == 0) ? emergencyConfig->left : emergencyConfig->right;
+      (emergencySide == 0) ? emergencyTiming.left : emergencyTiming.right;
 
   unsigned long duration = 0;
   switch (emergencyStep) {
@@ -143,7 +164,7 @@ bool tickEmergency() {
       break;
   }
 
-  drawEmergency(*emergencyConfig, emergencySide, emergencyLit);
+  drawEmergency(emergencySide, emergencyLit);
   return true;
 }
 
@@ -164,7 +185,7 @@ void drawBoldChevron(bool right, int x, uint16_t color) {
 
 void drawArrowSequence(bool right) {
   panel->fillScreen(0);
-  const uint16_t color = panel->color565(255, 255, 0);
+  const uint16_t color = effectColor565();
 
   const int phase = arrowPhase % kArrowSteps;
   const int x =
@@ -264,31 +285,170 @@ void drawHazardTriangle() {
   panel->setCursor(cx - 5, markY);
   panel->print("!");
 }
+
+bool lifeAt(int x, int y) {
+  if (x < 0 || y < 0 || x >= kLifeCols || y >= kLifeRows) {
+    return false;
+  }
+  return lifeGrid[y * kLifeCols + x] != 0;
+}
+
+int countLifeNeighbors(int x, int y) {
+  int n = 0;
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      if (lifeAt(x + dx, y + dy)) {
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
+void seedLife() {
+  for (int i = 0; i < kLifeCols * kLifeRows; i++) {
+    lifeGrid[i] = (esp_random() & 3) == 0 ? 1 : 0;
+  }
+}
+
+void drawLife() {
+  panel->fillScreen(0);
+  const uint16_t color = effectColor565();
+  for (int y = 0; y < kLifeRows; y++) {
+    for (int x = 0; x < kLifeCols; x++) {
+      if (!lifeGrid[y * kLifeCols + x]) {
+        continue;
+      }
+      const int px = x * 2;
+      const int py = y * 2;
+      panel->fillRect(px, py, 2, 2, color);
+    }
+  }
+}
+
+void stepLife() {
+  for (int y = 0; y < kLifeRows; y++) {
+    for (int x = 0; x < kLifeCols; x++) {
+      const int n = countLifeNeighbors(x, y);
+      const bool alive = lifeAt(x, y);
+      bool next = false;
+      if (alive) {
+        next = (n == 2 || n == 3);
+      } else {
+        next = (n == 3);
+      }
+      lifeNext[y * kLifeCols + x] = next ? 1 : 0;
+    }
+  }
+  memcpy(lifeGrid, lifeNext, sizeof(lifeGrid));
+}
+
+void drawProgressBar() {
+  panel->fillScreen(0);
+  const uint16_t color = effectColor565();
+  const int width = (PANEL_RES_X * effectParam) / 100;
+  if (width > 0) {
+    panel->fillRect(0, PANEL_RES_Y / 2 - 4, width, 8, color);
+  }
+}
+
+void drawFullStrobe() {
+  if (strobeLit) {
+    panel->fillScreen(effectColor565());
+  } else {
+    panel->fillScreen(0);
+  }
+}
+
+void drawPulse() {
+  const uint8_t level = 64 + (pulsePhase % 192);
+  const uint16_t color =
+      panel->color565((effectColorR * level) / 255, (effectColorG * level) / 255,
+                      (effectColorB * level) / 255);
+  panel->fillScreen(color);
+}
+
+void drawBorderChase() {
+  panel->fillScreen(0);
+  const uint16_t color = effectColor565();
+  const int perimeter = 2 * (PANEL_RES_X + PANEL_RES_Y);
+  int pos = borderPos % perimeter;
+  for (int i = 0; i < 8; i++) {
+    const int p = (pos + i) % perimeter;
+    int x = 0;
+    int y = 0;
+    if (p < PANEL_RES_X) {
+      x = p;
+      y = 0;
+    } else if (p < PANEL_RES_X + PANEL_RES_Y) {
+      x = PANEL_RES_X - 1;
+      y = p - PANEL_RES_X;
+    } else if (p < 2 * PANEL_RES_X + PANEL_RES_Y) {
+      x = PANEL_RES_X - 1 - (p - PANEL_RES_X - PANEL_RES_Y);
+      y = PANEL_RES_Y - 1;
+    } else {
+      x = 0;
+      y = PANEL_RES_Y - 1 - (p - 2 * PANEL_RES_X - PANEL_RES_Y);
+    }
+    panel->drawPixel(x, y, color);
+    if (y + 1 < PANEL_RES_Y) {
+      panel->drawPixel(x, y + 1, color);
+    }
+  }
+}
 }  // namespace
 
 void effectRendererBegin(VirtualMatrixPanel *virtualPanel) {
   panel = virtualPanel;
 }
 
-void effectRendererApply(EffectId id) {
+void effectRendererApply(EffectId id, uint8_t r, uint8_t g, uint8_t b, uint8_t param) {
   activeEffect = id;
+  effectColorR = r;
+  effectColorG = g;
+  effectColorB = b;
+  effectParam = param;
   emergencySide = 0;
   emergencyFlashDone = 0;
   arrowPhase = 0;
   lastPhaseMs = millis();
   lastArrowMs = millis();
-  emergencyConfig = nullptr;
+  lastLifeMs = millis();
+  lastStrobeMs = millis();
+  lastPulseMs = millis();
+  lastBorderMs = millis();
+  strobeLit = true;
+  pulsePhase = 0;
+  borderPos = 0;
+  emergencyActive = false;
   panel->fillScreen(0);
 
   switch (id) {
     case EffectId::BrightWhite:
-      panel->fillScreen(panel->color565(255, 255, 255));
+      panel->fillScreen(effectColor565());
       break;
     case EffectId::BlueEmergency:
-      resetEmergencyState(kBlueEmergencyParams);
-      break;
     case EffectId::YellowEmergency:
-      resetEmergencyState(kYellowEmergencyParams);
+      resetEmergencyState();
+      break;
+    case EffectId::FullStrobe:
+      drawFullStrobe();
+      break;
+    case EffectId::Pulse:
+      drawPulse();
+      break;
+    case EffectId::BorderChase:
+      drawBorderChase();
+      break;
+    case EffectId::ProgressBar:
+      drawProgressBar();
+      break;
+    case EffectId::GameOfLife:
+      seedLife();
+      drawLife();
       break;
     case EffectId::ArrowLeft:
       drawArrowSequence(false);
@@ -323,6 +483,41 @@ bool effectRendererTick(EffectId id) {
       tickEmergency();
       return true;
 
+    case EffectId::FullStrobe:
+      if (now - lastStrobeMs >= 150) {
+        lastStrobeMs = now;
+        strobeLit = !strobeLit;
+        drawFullStrobe();
+      }
+      return true;
+
+    case EffectId::Pulse:
+      if (now - lastPulseMs >= 40) {
+        lastPulseMs = now;
+        pulsePhase++;
+        drawPulse();
+      }
+      return true;
+
+    case EffectId::BorderChase:
+      if (now - lastBorderMs >= 60) {
+        lastBorderMs = now;
+        borderPos = (borderPos + 1) % (2 * (PANEL_RES_X + PANEL_RES_Y));
+        drawBorderChase();
+      }
+      return true;
+
+    case EffectId::ProgressBar:
+      return false;
+
+    case EffectId::GameOfLife:
+      if (now - lastLifeMs >= 200) {
+        lastLifeMs = now;
+        stepLife();
+        drawLife();
+      }
+      return true;
+
     case EffectId::ArrowLeft:
       if (now - lastArrowMs >= kArrowMs) {
         lastArrowMs = now;
@@ -355,9 +550,24 @@ const EffectInfo *effectCatalog(size_t *count) {
   return kCatalog;
 }
 
+bool effectIsMonochrome(EffectId id) {
+  size_t count = 0;
+  const EffectInfo *catalog = effectCatalog(&count);
+  for (size_t i = 0; i < count; i++) {
+    if (catalog[i].effect == id) {
+      return catalog[i].monochrome;
+    }
+  }
+  return false;
+}
+
 EffectId effectIdFromString(const char *id) {
   if (!id) {
     return EffectId::None;
+  }
+  if (strcmp(id, "flashing_halves") == 0 || strcmp(id, "blue_emergency") == 0 ||
+      strcmp(id, "yellow_emergency") == 0) {
+    return EffectId::BlueEmergency;
   }
   size_t count = 0;
   const EffectInfo *catalog = effectCatalog(&count);
@@ -370,6 +580,9 @@ EffectId effectIdFromString(const char *id) {
 }
 
 const char *effectIdToString(EffectId id) {
+  if (id == EffectId::BlueEmergency || id == EffectId::YellowEmergency) {
+    return "flashing_halves";
+  }
   size_t count = 0;
   const EffectInfo *catalog = effectCatalog(&count);
   for (size_t i = 0; i < count; i++) {
@@ -381,6 +594,9 @@ const char *effectIdToString(EffectId id) {
 }
 
 const char *effectLabel(EffectId id) {
+  if (id == EffectId::BlueEmergency || id == EffectId::YellowEmergency) {
+    return "Flashing halves";
+  }
   size_t count = 0;
   const EffectInfo *catalog = effectCatalog(&count);
   for (size_t i = 0; i < count; i++) {
