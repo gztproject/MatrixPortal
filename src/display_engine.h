@@ -15,6 +15,8 @@ class DisplayEngine {
   SignPreset activePreset() const;
   void selectPreset(int index);
   void applyPreset(const SignPreset &preset, int index, bool persist = true);
+  void setGlobalBrightness(uint8_t percent);
+  uint8_t globalBrightness() const;
   void tick();
 
  private:

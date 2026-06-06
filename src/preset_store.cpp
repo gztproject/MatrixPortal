@@ -65,6 +65,16 @@ uint8_t textHeightPxFromLegacyFontScale(const char *value) {
   return TEXT_HEIGHT_PX_DEFAULT;
 }
 
+uint8_t clampBrightness(int value) {
+  if (value < 1) {
+    return 1;
+  }
+  if (value > 100) {
+    return 100;
+  }
+  return static_cast<uint8_t>(value);
+}
+
 void PresetStore::setDefaults(SignPreset &preset) const {
   preset.contentType = ContentType::Text;
   preset.effectId = 0;
@@ -74,7 +84,6 @@ void PresetStore::setDefaults(SignPreset &preset) const {
   preset.text[sizeof(preset.text) - 1] = '\0';
   preset.scroll = true;
   preset.scrollDelayMs = 40;
-  preset.brightness = kDefaultBrightness;
   preset.colorR = 255;
   preset.colorG = 255;
   preset.colorB = 255;
@@ -113,7 +122,7 @@ void PresetStore::migrateLegacySign() {
   text.toCharArray(preset.text, sizeof(preset.text));
   preset.scroll = legacy.getBool("scroll", preset.scroll);
   preset.scrollDelayMs = legacy.getUShort("scrollMs", preset.scrollDelayMs);
-  preset.brightness = legacy.getUChar("bright", preset.brightness);
+  globalBrightness_ = clampBrightness(legacy.getUChar("bright", kDefaultBrightness));
   preset.colorR = legacy.getUChar("colorR", preset.colorR);
   preset.colorG = legacy.getUChar("colorG", preset.colorG);
   preset.colorB = legacy.getUChar("colorB", preset.colorB);
@@ -123,6 +132,7 @@ void PresetStore::migrateLegacySign() {
   activeIndex_ = 0;
   savePreset(0);
   saveActiveIndex();
+  saveGlobalBrightness();
 
   Preferences clearLegacy;
   if (clearLegacy.begin("sign", false)) {
@@ -148,6 +158,12 @@ void PresetStore::loadAll() {
     activeIndex_ = 0;
   }
 
+  uint8_t migrateBrightness = kDefaultBrightness;
+  bool hasGlobalBrightness = prefs.isKey("brightness");
+  if (hasGlobalBrightness) {
+    globalBrightness_ = clampBrightness(prefs.getUChar("brightness", kDefaultBrightness));
+  }
+
   for (int i = 0; i < PRESET_COUNT; i++) {
     const String key = String("p") + i;
     const String json = prefs.getString(key.c_str(), "");
@@ -167,7 +183,9 @@ void PresetStore::loadAll() {
     }
     preset.scroll = doc["scroll"] | preset.scroll;
     preset.scrollDelayMs = doc["scrollDelayMs"] | preset.scrollDelayMs;
-    preset.brightness = doc["brightness"] | preset.brightness;
+    if (doc["brightness"].is<int>() && i == activeIndex_) {
+      migrateBrightness = static_cast<uint8_t>(doc["brightness"].as<int>());
+    }
     preset.colorR = doc["colorR"] | preset.colorR;
     preset.colorG = doc["colorG"] | preset.colorG;
     preset.colorB = doc["colorB"] | preset.colorB;
@@ -197,6 +215,20 @@ void PresetStore::loadAll() {
     presets_[i] = preset;
   }
 
+  if (!hasGlobalBrightness) {
+    globalBrightness_ = clampBrightness(migrateBrightness);
+    saveGlobalBrightness();
+  }
+
+  prefs.end();
+}
+
+void PresetStore::saveGlobalBrightness() {
+  Preferences prefs;
+  if (!prefs.begin(kNs, false)) {
+    return;
+  }
+  prefs.putUChar("brightness", globalBrightness_);
   prefs.end();
 }
 
@@ -213,7 +245,6 @@ void PresetStore::savePreset(int index) {
   doc["text"] = presets_[index].text;
   doc["scroll"] = presets_[index].scroll;
   doc["scrollDelayMs"] = presets_[index].scrollDelayMs;
-  doc["brightness"] = presets_[index].brightness;
   doc["colorR"] = presets_[index].colorR;
   doc["colorG"] = presets_[index].colorG;
   doc["colorB"] = presets_[index].colorB;
@@ -272,5 +303,16 @@ void PresetStore::setActiveIndex(int index, bool persist) {
   activeIndex_ = index;
   if (persist) {
     saveActiveIndex();
+  }
+}
+
+uint8_t PresetStore::globalBrightness() const {
+  return globalBrightness_;
+}
+
+void PresetStore::setGlobalBrightness(uint8_t value, bool persist) {
+  globalBrightness_ = clampBrightness(value);
+  if (persist) {
+    saveGlobalBrightness();
   }
 }

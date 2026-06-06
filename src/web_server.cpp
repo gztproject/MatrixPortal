@@ -39,6 +39,10 @@ void appendWifiStatus(JsonObject obj) {
   }
 }
 
+void appendGlobalBrightness(JsonObject obj) {
+  obj["brightness"] = presetStore->globalBrightness();
+}
+
 void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
   obj["contentType"] = contentTypeToString(preset.contentType);
   obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
@@ -48,7 +52,6 @@ void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
   obj["text"] = preset.text;
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
-  obj["brightness"] = preset.brightness;
 
   char color[8];
   snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
@@ -87,11 +90,6 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   } else if (obj["scrollDelayMs"].is<int>()) {
     preset.scrollDelayMs = static_cast<uint16_t>(obj["scrollDelayMs"].as<int>());
   }
-  if (obj["brightness"].is<uint8_t>()) {
-    preset.brightness = obj["brightness"];
-  } else if (obj["brightness"].is<int>()) {
-    preset.brightness = static_cast<uint8_t>(obj["brightness"].as<int>());
-  }
   if (obj["color"].is<const char *>()) {
     const uint32_t rgb = parseHexColor(obj["color"]);
     preset.colorR = (rgb >> 16) & 0xFF;
@@ -109,13 +107,15 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
 
 void sendPresetsJson(AsyncWebServerRequest *request) {
   JsonDocument doc;
-  doc["activeIndex"] = presetStore->activeIndex();
-  JsonArray arr = doc["presets"].to<JsonArray>();
+  JsonObject root = doc.to<JsonObject>();
+  root["activeIndex"] = presetStore->activeIndex();
+  JsonArray arr = root["presets"].to<JsonArray>();
   for (int i = 0; i < PRESET_COUNT; i++) {
     JsonObject item = arr.add<JsonObject>();
     presetToJson(presetStore->get(i), item, i);
   }
-  appendWifiStatus(doc.to<JsonObject>());
+  appendGlobalBrightness(root);
+  appendWifiStatus(root);
 
   String body;
   serializeJson(doc, body);
@@ -131,7 +131,6 @@ void appendPresetFields(JsonObject obj, const SignPreset &preset) {
   obj["text"] = preset.text;
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
-  obj["brightness"] = preset.brightness;
   char color[8];
   snprintf(color, sizeof(color), "#%02X%02X%02X", preset.colorR, preset.colorG, preset.colorB);
   obj["color"] = color;
@@ -180,6 +179,33 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
+  server.on("/api/brightness", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    doc["brightness"] = presetStore->globalBrightness();
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+  });
+
+  server.on("/api/brightness", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int brightness = doc["brightness"] | -1;
+              if (brightness < 1 || brightness > 100) {
+                request->send(400, "application/json", "{\"error\":\"brightness must be 1-100\"}");
+                return;
+              }
+              displayEngine->setGlobalBrightness(static_cast<uint8_t>(brightness));
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
   server.on("/api/presets", HTTP_GET, [](AsyncWebServerRequest *request) {
     sendPresetsJson(request);
   });
@@ -210,9 +236,11 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
     const SignPreset preset = displayEngine->activePreset();
     JsonDocument doc;
-    appendPresetFields(doc.to<JsonObject>(), preset);
-    doc["activeIndex"] = displayEngine->activeIndex();
-    appendWifiStatus(doc.to<JsonObject>());
+    JsonObject root = doc.to<JsonObject>();
+    appendPresetFields(root, preset);
+    root["activeIndex"] = displayEngine->activeIndex();
+    appendGlobalBrightness(root);
+    appendWifiStatus(root);
 
     String body;
     serializeJson(doc, body);

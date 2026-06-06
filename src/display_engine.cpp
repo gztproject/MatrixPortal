@@ -37,6 +37,18 @@ SignPreset DisplayEngine::activePreset() const {
   return runtime_;
 }
 
+uint8_t DisplayEngine::globalBrightness() const {
+  return store_ ? store_->globalBrightness() : GLOBAL_BRIGHTNESS_DEFAULT;
+}
+
+void DisplayEngine::setGlobalBrightness(uint8_t percent) {
+  if (!store_) {
+    return;
+  }
+  store_->setGlobalBrightness(percent);
+  applyBrightness(store_->globalBrightness());
+}
+
 void DisplayEngine::selectPreset(int index) {
   if (!store_) {
     return;
@@ -84,9 +96,6 @@ void DisplayEngine::applyActivePreset() {
   if (runtime_.scrollDelayMs < 10) {
     runtime_.scrollDelayMs = 10;
   }
-  if (runtime_.brightness > 100) {
-    runtime_.brightness = 100;
-  }
   if (runtime_.rowCount < 1) {
     runtime_.rowCount = 1;
   }
@@ -94,7 +103,7 @@ void DisplayEngine::applyActivePreset() {
     runtime_.rowCount = 4;
   }
 
-  applyBrightness(runtime_.brightness);
+  applyBrightness(store_->globalBrightness());
   gifPlayerClose();
   scrollOffset_ = PANEL_RES_X;
   dirty_ = true;
@@ -204,8 +213,12 @@ void DisplayEngine::redrawTextBlock() {
   panel_->setTextWrap(false);
   panel_->setTextColor(textColor565(runtime_));
 
-  const int x = runtime_.scroll ? scrollOffset_ : 4;
   for (int i = 0; i < textLineCount_; i++) {
+    int x = scrollOffset_;
+    if (!runtime_.scroll) {
+      const int width = static_cast<int>(strlen(textLines_[i])) * 6 * textLayout_.textSize;
+      x = (PANEL_RES_X - width) / 2;
+    }
     panel_->setCursor(x, textLayout_.rowY[i]);
     panel_->print(textLines_[i]);
   }
@@ -239,8 +252,6 @@ void DisplayEngine::tickText(const SignPreset &preset) {
       }
       dirty_ = true;
     }
-  } else if (dirty_) {
-    scrollOffset_ = 4;
   }
 
   if (dirty_) {
