@@ -6,15 +6,46 @@ namespace {
 VirtualMatrixPanel *panel = nullptr;
 EffectId activeEffect = EffectId::None;
 unsigned long lastPhaseMs = 0;
-uint8_t emergencyPhase = 0;
 uint8_t arrowPhase = 0;
 unsigned long lastArrowMs = 0;
 
-constexpr unsigned long kStrobeMs = 350;
 constexpr unsigned long kArrowMs = 120;
 constexpr int kChevronWidth = PANEL_RES_Y / 2;
+constexpr int kChevronBarWidth = 10;
+constexpr int kChevronBarHeight = 1;
+constexpr int kChevronBars = PANEL_RES_Y;
 constexpr int kArrowSteps = 8;
 constexpr int kArrowStepX = (PANEL_RES_X - kChevronWidth) / (kArrowSteps - 1);
+
+struct EmergencyHalfParams {
+  uint8_t flashCount;
+  unsigned long flashOnMs;
+  unsigned long flashOffMs;
+  unsigned long holdOnMs;
+};
+
+struct EmergencyParams {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+  EmergencyHalfParams left;
+  EmergencyHalfParams right;
+};
+
+enum class EmergencyStep : uint8_t { FlashOn, FlashOff, HoldOn };
+
+constexpr EmergencyHalfParams kDefaultEmergencyHalf = {2, 120, 120, 0};
+
+const EmergencyParams kBlueEmergencyParams = {
+    0, 0, 255, kDefaultEmergencyHalf, kDefaultEmergencyHalf};
+const EmergencyParams kYellowEmergencyParams = {
+    255, 170, 0, kDefaultEmergencyHalf, kDefaultEmergencyHalf};
+
+uint8_t emergencySide = 0;
+uint8_t emergencyFlashDone = 0;
+bool emergencyLit = false;
+EmergencyStep emergencyStep = EmergencyStep::FlashOn;
+const EmergencyParams *emergencyConfig = nullptr;
 
 static const EffectInfo kCatalog[] = {
     {"bright_white", "Bright white", EffectId::BrightWhite},
@@ -26,28 +57,108 @@ static const EffectInfo kCatalog[] = {
     {"hazard_triangle", "Hazard triangle", EffectId::HazardTriangle},
 };
 
-void drawEmergency(uint8_t r, uint8_t g, uint8_t b, uint8_t phase) {
-  const uint16_t color = panel->color565(r, g, b);
-  const int halfWidth = PANEL_RES_X / 2;
-
+void drawEmergency(const EmergencyParams &params, uint8_t side, bool lit) {
   panel->fillScreen(0);
-  if (phase == 0) {
+  if (!lit) {
+    return;
+  }
+
+  const uint16_t color = panel->color565(params.r, params.g, params.b);
+  const int halfWidth = PANEL_RES_X / 2;
+  if (side == 0) {
     panel->fillRect(0, 0, halfWidth, PANEL_RES_Y, color);
   } else {
     panel->fillRect(halfWidth, 0, PANEL_RES_X - halfWidth, PANEL_RES_Y, color);
   }
 }
 
-void drawFullHeightChevron(bool right, int x, uint16_t color) {
-  const int halfHeight = PANEL_RES_Y / 2;
-  for (int y = 0; y < PANEL_RES_Y; y++) {
-    const int span = (kChevronWidth * abs(y - halfHeight)) / halfHeight;
-    if (right) {
-      const int x0 = x + kChevronWidth - span;
-      panel->drawFastHLine(x0, y, span + 1, color);
-    } else {
-      panel->drawFastHLine(x, y, span + 1, color);
-    }
+void resetEmergencyState(const EmergencyParams &params) {
+  emergencyConfig = &params;
+  emergencySide = 0;
+  emergencyFlashDone = 0;
+  emergencyLit = true;
+  emergencyStep = EmergencyStep::FlashOn;
+  lastPhaseMs = millis();
+  drawEmergency(params, emergencySide, emergencyLit);
+}
+
+void advanceEmergencySide() {
+  emergencySide ^= 1;
+  emergencyFlashDone = 0;
+  emergencyLit = true;
+  emergencyStep = EmergencyStep::FlashOn;
+}
+
+bool tickEmergency() {
+  if (!emergencyConfig) {
+    return false;
+  }
+
+  const EmergencyHalfParams &half =
+      (emergencySide == 0) ? emergencyConfig->left : emergencyConfig->right;
+
+  unsigned long duration = 0;
+  switch (emergencyStep) {
+    case EmergencyStep::FlashOn:
+      duration = half.flashOnMs;
+      break;
+    case EmergencyStep::FlashOff:
+      duration = half.flashOffMs;
+      break;
+    case EmergencyStep::HoldOn:
+      duration = half.holdOnMs;
+      break;
+  }
+
+  const unsigned long now = millis();
+  if (now - lastPhaseMs < duration) {
+    return true;
+  }
+
+  lastPhaseMs = now;
+
+  switch (emergencyStep) {
+    case EmergencyStep::FlashOn:
+      emergencyLit = false;
+      emergencyStep = EmergencyStep::FlashOff;
+      break;
+
+    case EmergencyStep::FlashOff:
+      emergencyFlashDone++;
+      if (emergencyFlashDone >= half.flashCount) {
+        if (half.holdOnMs > 0) {
+          emergencyLit = true;
+          emergencyStep = EmergencyStep::HoldOn;
+        } else {
+          advanceEmergencySide();
+        }
+      } else {
+        emergencyLit = true;
+        emergencyStep = EmergencyStep::FlashOn;
+      }
+      break;
+
+    case EmergencyStep::HoldOn:
+      advanceEmergencySide();
+      break;
+  }
+
+  drawEmergency(*emergencyConfig, emergencySide, emergencyLit);
+  return true;
+}
+
+void drawBoldChevron(bool right, int x, uint16_t color) {
+  const int maxOffset = kChevronWidth - kChevronBarWidth;
+  const int centerBar = (kChevronBars - 1) / 2;
+  const int totalHeight = kChevronBars * kChevronBarHeight;
+  const int startY = (PANEL_RES_Y - totalHeight) / 2;
+
+  for (int i = 0; i < kChevronBars; i++) {
+    const int y = startY + i * kChevronBarHeight;
+    const int distFromCenter = abs(i - centerBar);
+    const int offset = (centerBar == 0) ? 0 : (maxOffset * distFromCenter) / centerBar;
+    const int barX = right ? (x + maxOffset - offset) : (x + offset);
+    panel->fillRect(barX, y, kChevronBarWidth, kChevronBarHeight, color);
   }
 }
 
@@ -58,7 +169,7 @@ void drawArrowSequence(bool right) {
   const int phase = arrowPhase % kArrowSteps;
   const int x =
       right ? phase * kArrowStepX : (PANEL_RES_X - kChevronWidth - phase * kArrowStepX);
-  drawFullHeightChevron(right, x, color);
+  drawBoldChevron(right, x, color);
 }
 
 void drawStop() {
@@ -161,10 +272,12 @@ void effectRendererBegin(VirtualMatrixPanel *virtualPanel) {
 
 void effectRendererApply(EffectId id) {
   activeEffect = id;
-  emergencyPhase = 0;
+  emergencySide = 0;
+  emergencyFlashDone = 0;
   arrowPhase = 0;
   lastPhaseMs = millis();
   lastArrowMs = millis();
+  emergencyConfig = nullptr;
   panel->fillScreen(0);
 
   switch (id) {
@@ -172,10 +285,10 @@ void effectRendererApply(EffectId id) {
       panel->fillScreen(panel->color565(255, 255, 255));
       break;
     case EffectId::BlueEmergency:
-      drawEmergency(0, 0, 255, emergencyPhase);
+      resetEmergencyState(kBlueEmergencyParams);
       break;
     case EffectId::YellowEmergency:
-      drawEmergency(255, 170, 0, emergencyPhase);
+      resetEmergencyState(kYellowEmergencyParams);
       break;
     case EffectId::ArrowLeft:
       drawArrowSequence(false);
@@ -206,19 +319,8 @@ bool effectRendererTick(EffectId id) {
       return false;
 
     case EffectId::BlueEmergency:
-      if (now - lastPhaseMs >= kStrobeMs) {
-        lastPhaseMs = now;
-        emergencyPhase ^= 1;
-        drawEmergency(0, 0, 255, emergencyPhase);
-      }
-      return true;
-
     case EffectId::YellowEmergency:
-      if (now - lastPhaseMs >= kStrobeMs) {
-        lastPhaseMs = now;
-        emergencyPhase ^= 1;
-        drawEmergency(255, 170, 0, emergencyPhase);
-      }
+      tickEmergency();
       return true;
 
     case EffectId::ArrowLeft:
