@@ -475,6 +475,7 @@ void DisplayEngine::redrawTextBlock() {
 
   clearDrawBuffer();
   const uint16_t color = textColor565(runtime_);
+  const int refY = textLayout_.rowY[0] + runtime_.contentOffsetY;
 
   for (int i = 0; i < textLineCount_; i++) {
     int x = scrollOffset_;
@@ -484,6 +485,8 @@ void DisplayEngine::redrawTextBlock() {
     }
     x += runtime_.contentOffsetX;
     const int y = textLayout_.rowY[i] + runtime_.contentOffsetY;
+    x = panelAlignVirtualX(static_cast<int16_t>(x), static_cast<int16_t>(y),
+                           static_cast<int16_t>(refY));
     drawTextLine(panel_, x, y, textLayout_.textSize, color, textLines_[i]);
   }
   finishFrame();

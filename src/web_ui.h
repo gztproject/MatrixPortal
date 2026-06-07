@@ -315,6 +315,8 @@ let firmwareVersion="";
 let otaPollTimer=null;
 let selectedFirmwareFile=null;
 let lastFirmwareUiData=null;
+let loadPresetsGeneration=0;
+let slotClickTimer=null;
 const PANEL_W=104;
 const PANEL_H=52;
 const $=id=>document.getElementById(id);
@@ -682,6 +684,21 @@ async function selectSlot(index){
   updateSlotInfo();
 }
 
+function cancelPendingSlotSelect(){
+  if(slotClickTimer){
+    clearTimeout(slotClickTimer);
+    slotClickTimer=null;
+  }
+}
+
+function scheduleSelectSlot(index){
+  cancelPendingSlotSelect();
+  slotClickTimer=setTimeout(()=>{
+    slotClickTimer=null;
+    selectSlot(index);
+  },280);
+}
+
 function renderEffects(){
   const el=$("effectGrid");
   el.innerHTML="";
@@ -711,8 +728,12 @@ function renderSlots(){
     if(i===selectedSlot&&isDirty())cls+=" dirty";
     b.className=cls;
     b.innerHTML=`<span class="slot-num">${i+1}</span><span class="slot-label">${slotLabel(p,i)}</span>`;
-    b.onclick=()=>selectSlot(i);
-    b.ondblclick=()=>activateSlot(i);
+    b.onclick=()=>scheduleSelectSlot(i);
+    b.ondblclick=(e)=>{
+      e.preventDefault();
+      cancelPendingSlotSelect();
+      activateSlot(i);
+    };
     el.appendChild(b);
   }
   $("saveSlot").textContent=`Save slot ${selectedSlot+1}`;
@@ -1083,7 +1104,11 @@ async function loadPresets(opts={}){
   const keepSelection=!!opts.keepSelection;
   const keepForm=!!opts.keepForm;
   const prevSlot=selectedSlot;
+  const generation=++loadPresetsGeneration;
   const data=await apiJson("/api/presets");
+  if(generation!==loadPresetsGeneration){
+    return data;
+  }
   presets=data.presets||[];
   activeSlot=data.activeIndex||0;
   if(typeof data.brightness==="number")globalBrightness=data.brightness;
@@ -1234,6 +1259,8 @@ async function tryOnPanel(){
 
 async function activateSlot(index){
   if(index==null)index=selectedSlot;
+  cancelPendingSlotSelect();
+  loadPresetsGeneration++;
   setBusy(true);
   try{
     await apiJson("/api/presets/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:index})});

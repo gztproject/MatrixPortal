@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.7 — 2026-06-07
+
+### Fixed
+
+- Scrolling text shear at panel midline: compensate per-row virtual X for the 13-row tile remap so all rows share the same physical scroll step (not just a back-buffer clear)
+- Web UI double-click on preset slot: debounce single-click vs double-click and ignore stale `loadPresets` responses that could undo live preset selection
+
 ## v0.2.6 — 2026-06-07
 
 ### Fixed

@@ -24,7 +24,7 @@
 
 static MatrixPanel_I2S_DMA *dma_display = nullptr;
 
-static void map104x52S13(VirtualCoords &coords) {
+static void map104x52Coords(VirtualCoords &coords) {
 #if MAP_VARIANT == 0
   static const int tile_width = 8;
   static const int tile_height = 13;
@@ -54,12 +54,35 @@ class Panel104x52S13 : public VirtualMatrixPanel {
     if (coords.x == -1 || coords.y == -1) {
       return coords;
     }
-    map104x52S13(coords);
+    map104x52Coords(coords);
     return coords;
   }
 };
 
+static VirtualCoords mappedCoords(int16_t x, int16_t y) {
+  VirtualCoords coords;
+  coords.x = x;
+  coords.y = y;
+  map104x52Coords(coords);
+  return coords;
+}
+
 static Panel104x52S13 *panel = nullptr;
+
+int16_t panelAlignVirtualX(int16_t virtX, int16_t virtY, int16_t refVirtY) {
+  const VirtualCoords ref = mappedCoords(virtX, refVirtY);
+  if (ref.x < 0) {
+    return virtX;
+  }
+
+  for (int delta = -64; delta <= 64; delta++) {
+    const VirtualCoords candidate = mappedCoords(static_cast<int16_t>(virtX + delta), virtY);
+    if (candidate.x == ref.x) {
+      return static_cast<int16_t>(virtX + delta);
+    }
+  }
+  return virtX;
+}
 
 MatrixPanel_I2S_DMA *panelProfileDma() {
   return dma_display;
