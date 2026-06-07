@@ -54,6 +54,8 @@ Contributions welcome — see [LICENSE](LICENSE) (MIT).
 
 If login fails after an older firmware build (random password stored in NVS), run `pio run -t erase` then upload again.
 
+**Upgrading to v0.2.0+:** dual OTA partitions require a **one-time USB flash** — OTA cannot migrate from the old single-app layout.
+
 ---
 
 ## Quick start
@@ -143,6 +145,20 @@ Monochrome effects (all except STOP and hazard) use the preset **colour** field.
 
 Effect rendering: [`src/effect_renderer.cpp`](src/effect_renderer.cpp).
 
+### Firmware upgrade (OTA)
+
+Tasmota-style updates in the Web UI **Firmware upgrade** section:
+
+- **Upgrade from file** — upload a `.bin` over the AP (works without home Wi‑Fi)
+- **Check for updates** — fetches `{otaUrl}version.json` (needs home Wi‑Fi + internet)
+- **Upgrade from URL** — downloads `firmware.bin` from the manifest and reboots
+
+Default OTA URL points at GitHub Releases (`FIRMWARE_OTA_URL_DEFAULT` in [`platformio.ini`](platformio.ini)); override in the Web UI or at build time.
+
+Publish a release: tag `v0.2.0` → GitHub Actions uploads `firmware.bin` + `version.json`.
+
+The panel shows **Updating…** with progress during web upload or remote download.
+
 ### Backup and restore
 
 Download a JSON backup of all slots, labels, playlist, brightness, and timezone. Restore overwrites device configuration from a backup file.
@@ -157,6 +173,7 @@ Single-page app embedded in firmware ([`src/web_ui.h`](src/web_ui.h)):
 - Optional slot label, duplicate, playlist controls
 - **104×52 preview canvas** (approximate; effects/GIF are simplified)
 - Timezone, browser time sync, security (change Web UI password)
+- Firmware upgrade (manual upload + remote check)
 - Sticky **Try on panel** / **Show saved** / **Save slot**
 - Toast notifications for API feedback
 
@@ -193,6 +210,11 @@ All endpoints require **HTTP Basic Auth** (username `admin`, password from devic
 | POST | `/api/timezone` | Set timezone (`timezoneId`: CET, UTC, WET, EET, GMT) |
 | POST | `/api/time/sync` | Set time from browser (`unix`: seconds UTC) |
 | POST | `/api/auth/password` | Change Web UI password (`password`, min 8 chars) |
+| GET | `/api/firmware` | Firmware version, OTA URL, update state/progress |
+| POST | `/api/firmware/url` | Save OTA base URL (`otaUrl`) |
+| POST | `/api/firmware/check` | Fetch remote `version.json` and compare |
+| POST | `/api/firmware/upgrade` | Download and install update (optional `{ "url": "..." }`) |
+| POST | `/api/firmware/upload` | Upload `.bin` firmware (multipart) |
 | POST | `/api/wifi/connect` | Save STA credentials and connect |
 | POST | `/api/wifi/reset` | Forget STA credentials |
 
@@ -200,7 +222,7 @@ All endpoints require **HTTP Basic Auth** (username `admin`, password from devic
 
 **Clock `effectParam` flags:** bit 0 = show seconds, bit 2 = show date (`dd.mm.yyyy`). For effects, `effectParam` is 0–100 (e.g. progress bar level).
 
-**Global fields in GET `/api/presets`:** `brightness`, `playlistEnabled`, `playlistMask`, `playlistDwellMs`, `timezoneId`, `timeValid`, `timeSource` (`none` \| `browser` \| `ntp`), `apSsid`, `apIp`, `staConnected`, `staIp`, `staRssi`.
+**Global fields in GET `/api/presets`:** `brightness`, `playlistEnabled`, `playlistMask`, `playlistDwellMs`, `timezoneId`, `timeValid`, `timeSource`, `firmwareVersion`, `otaUrl`, `otaState`, `otaProgress`, `otaUpdateAvailable`, `apSsid`, `apIp`, `staConnected`, `staIp`, `staRssi`.
 
 ---
 
@@ -217,11 +239,12 @@ main.cpp
 ├── gif_player        AnimatedGIF from LittleFS
 ├── wifi_manager      AP + optional STA
 ├── web_auth          HTTP Basic Auth password (NVS)
+├── ota_update        OTA upload + remote upgrade
 ├── web_server        REST API + serves Web UI
 └── button_input      Short press: presets; long press: brightness
 ```
 
-**Partitions** ([`partitions.csv`](partitions.csv)): 4 MB app, 2 MB LittleFS (GIF storage under `/gif/`).
+**Partitions** ([`partitions.csv`](partitions.csv)): dual OTA app slots (~1.9 MB each), ~4.2 MB LittleFS for GIFs.
 
 ---
 
@@ -229,6 +252,8 @@ main.cpp
 
 | Setting | Location |
 |---------|----------|
+| Firmware version | `FIRMWARE_VERSION` in [`platformio.ini`](platformio.ini) |
+| Default OTA URL | `FIRMWARE_OTA_URL_DEFAULT` in [`platformio.ini`](platformio.ini) |
 | AP password (build time) | `build_flags = -DMATRIXSIGN_AP_PASSWORD=\"...\"` in [`platformio.ini`](platformio.ini) |
 | AP SSID | [`src/wifi_manager.cpp`](src/wifi_manager.cpp) (`MatrixSign`) |
 | Web UI password | Default **`admin`**; change in Web UI **Security** (min 8 characters) |

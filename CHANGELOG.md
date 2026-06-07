@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.0 — 2026-06-05
+
+### Added
+
+- Tasmota-style OTA firmware updates (manual `.bin` upload + remote check/upgrade)
+- Panel shows **Updating…** with progress % during OTA (web upload or remote download)
+- Dual OTA partition layout (`app0` + `app1`)
+- Web UI **Firmware upgrade** section (OTA URL, check, upgrade, file upload)
+- API: `/api/firmware`, `/api/firmware/url`, `/api/firmware/check`, `/api/firmware/upgrade`, `/api/firmware/upload`
+- GitHub Actions release workflow (publishes `firmware.bin` + `version.json` on tag)
+
+### Migration
+
+- **One-time USB flash required** when upgrading from v0.1.x (partition table change)
+
 ## v0.1.1 — 2026-06-05
 
 ### Fixed

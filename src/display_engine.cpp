@@ -5,6 +5,7 @@
 #include "panel_profile.h"
 #include "text_renderer.h"
 #include "time_sync.h"
+#include "ota_update.h"
 
 #include <cstring>
 #include <freertos/semphr.h>
@@ -446,6 +447,42 @@ void DisplayEngine::redrawTimeBlock() {
   drawTextLine(panel_, x, y, textSize, textColor565(runtime_), timeLine_);
 }
 
+void DisplayEngine::redrawOtaScreen(uint8_t progressPercent) {
+  if (!panel_) {
+    return;
+  }
+
+  panel_->fillScreen(0);
+
+  static const char kTitle[] = "Updating...";
+  char progressLine[8];
+  snprintf(progressLine, sizeof(progressLine), "%u%%", progressPercent);
+
+  int titleSize = fitTimeTextSize(kTitle);
+  int progressSize = fitTimeTextSize(progressLine);
+  int gap = titleSize;
+  int totalH = kTextBodyBandRows * titleSize + gap + kTextBodyBandRows * progressSize;
+  while (totalH > PANEL_RES_Y && (titleSize > 1 || progressSize > 1)) {
+    if (titleSize >= progressSize && titleSize > 1) {
+      titleSize--;
+    } else if (progressSize > 1) {
+      progressSize--;
+    } else {
+      break;
+    }
+    gap = titleSize;
+    totalH = kTextBodyBandRows * titleSize + gap + kTextBodyBandRows * progressSize;
+  }
+
+  const int top = (PANEL_RES_Y - totalH) / 2;
+  const uint16_t color = panel_->color565(255, 128, 0);
+  const int titleX = (PANEL_RES_X - textLinePixelWidth(kTitle, titleSize)) / 2;
+  const int progressX = (PANEL_RES_X - textLinePixelWidth(progressLine, progressSize)) / 2;
+  drawTextLine(panel_, titleX, top, titleSize, color, kTitle);
+  drawTextLine(panel_, progressX, top + kTextBodyBandRows * titleSize + gap, progressSize, color,
+               progressLine);
+}
+
 void DisplayEngine::tickTime(const SignPreset &preset) {
   (void)preset;
   const unsigned long now = millis();
@@ -551,6 +588,23 @@ void DisplayEngine::tick() {
   DisplayLock lock;
   if (!panel_ || !store_) {
     return;
+  }
+
+  static uint8_t lastOtaProgress = 255;
+
+  if (otaUpdateIsActive()) {
+    const OtaStatus ota = otaUpdateStatus();
+    if (lastOtaProgress != ota.progress) {
+      redrawOtaScreen(ota.progress);
+      lastOtaProgress = ota.progress;
+    }
+    return;
+  }
+
+  if (lastOtaProgress != 255) {
+    lastOtaProgress = 255;
+    dirty_ = true;
+    applyActivePreset();
   }
 
   timeSyncTick();

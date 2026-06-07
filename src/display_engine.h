@@ -42,6 +42,7 @@ class DisplayEngine {
   uint16_t textColor565(const SignPreset &preset) const;
   void redrawTextBlock();
   void redrawTimeBlock();
+  void redrawOtaScreen(uint8_t progressPercent);
   void tickText(const SignPreset &preset);
   void tickTime(const SignPreset &preset);
   void tickGif(const SignPreset &preset);

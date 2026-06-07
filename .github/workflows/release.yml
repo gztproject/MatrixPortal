@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build firmware
+        run: pio run
+      - name: Prepare release artifacts
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp .pio/build/adafruit_matrixportal_esp32s3/firmware.bin firmware.bin
+          printf '{"version":"%s","bin":"firmware.bin"}\n' "$VERSION" > version.json
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            firmware.bin
+            version.json
+          generate_release_notes: true

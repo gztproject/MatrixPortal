@@ -32,6 +32,14 @@ MatrixSign is hobby firmware for a garage LED sign — not certified signage. Re
 - All routes (`/` and `/api/*`) require Basic Auth.
 - Home Wi‑Fi credentials are stored by WiFiManager in NVS (ESP32 standard behaviour).
 
+## OTA firmware updates
+
+- Anyone with Web UI credentials can upload firmware or trigger a remote upgrade.
+- Remote upgrades fetch `version.json` and `firmware.bin` over **HTTP/HTTPS** without signature verification (hobby/trusted-network model).
+- GitHub Releases HTTPS uses certificate verification bypass (`setInsecure`) — acceptable for hobby use only.
+- Change the default **admin** password before enabling OTA on a network others can reach.
+- A bad OTA image can brick the device until USB reflash — test updates on the bench first.
+
 ## Not suitable for
 
 - Safety-critical or regulated signage (roadworks, emergency egress, etc.)

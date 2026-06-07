@@ -242,6 +242,22 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </details>
 
 <details>
+<summary>Firmware upgrade</summary>
+<p class="hint">Current version: <strong id="fwVersion">—</strong>. Manual upload works on AP. Remote check/upgrade needs home Wi‑Fi.</p>
+<label for="otaUrl">OTA URL</label>
+<input type="text" id="otaUrl" autocomplete="off" spellcheck="false">
+<button type="button" class="btn-secondary" id="saveOtaUrl">Save OTA URL</button>
+<p class="hint" id="otaStatus">Ready.</p>
+<div class="actions">
+<button type="button" class="action-btn" id="checkFirmware">Check for updates</button>
+<button type="button" class="action-btn" id="upgradeFirmware" disabled>Upgrade from URL</button>
+</div>
+<input type="file" id="firmwareFile" accept=".bin,application/octet-stream" hidden>
+<button type="button" class="btn-secondary" id="pickFirmware">Choose firmware file…</button>
+<button type="button" class="action-btn" id="uploadFirmware" disabled>Upgrade from file</button>
+</details>
+
+<details>
 <summary>Home Wi-Fi (optional)</summary>
 <label for="ssid">SSID</label>
 <input type="text" id="ssid" autocomplete="off">
@@ -291,6 +307,9 @@ let toastTimer=null;
 let brightTimer=null;
 let previewScroll=104;
 let previewTimer=null;
+let firmwareVersion="";
+let otaPollTimer=null;
+let selectedFirmwareFile=null;
 const PANEL_W=104;
 const PANEL_H=52;
 const $=id=>document.getElementById(id);
@@ -734,9 +753,97 @@ function updateBanner(c){
 function updateConnBar(c){
   connData=c||connData;
   let s="";
-  if(c.staConnected)s=`Home ${c.staIp} · ${c.staRssi} dBm · brightness ${globalBrightness}%`;
-  else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · brightness ${globalBrightness}%`;
+  const ver=firmwareVersion||c.firmwareVersion||"";
+  if(c.staConnected)s=`Home ${c.staIp} · ${c.staRssi} dBm · v${ver||"?"} · brightness ${globalBrightness}%`;
+  else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · v${ver||"?"} · brightness ${globalBrightness}%`;
   $("connBar").textContent=s;
+}
+
+function updateFirmwareUi(data){
+  if(!data)return;
+  if(data.firmwareVersion||data.version){
+    firmwareVersion=data.firmwareVersion||data.version;
+    $("fwVersion").textContent=firmwareVersion;
+  }
+  if(data.otaUrl&&$("otaUrl")&&!$("otaUrl").matches(":focus"))$("otaUrl").value=data.otaUrl;
+  const state=data.otaState||data.state||"idle";
+  const progress=typeof data.otaProgress==="number"?data.otaProgress:(typeof data.progress==="number"?data.progress:0);
+  const remote=data.otaRemoteVersion||data.remoteVersion||"";
+  const avail=!!(data.otaUpdateAvailable||data.updateAvailable);
+  let msg="Ready.";
+  if(state==="checking")msg="Checking for updates…";
+  else if(state==="downloading")msg=`Downloading… ${progress}%`;
+  else if(state==="flashing")msg=`Flashing… ${progress}%`;
+  else if(state==="error")msg=data.otaError||data.error||"Update failed.";
+  else if(remote){
+    msg=avail?`Update available: v${remote}`:`Remote v${remote} · up to date (v${firmwareVersion})`;
+  }
+  $("otaStatus").textContent=msg;
+  $("upgradeFirmware").disabled=busy||!(avail||remote)||state==="downloading"||state==="flashing";
+  if(state==="downloading"||state==="flashing"){
+    if(!otaPollTimer)otaPollTimer=setInterval(pollOtaStatus,1000);
+  }else if(otaPollTimer){
+    clearInterval(otaPollTimer);
+    otaPollTimer=null;
+  }
+}
+
+async function pollOtaStatus(){
+  try{
+    const data=await apiJson("/api/firmware");
+    updateFirmwareUi(data);
+  }catch(e){}
+}
+
+async function saveOtaUrl(){
+  setBusy(true);
+  try{
+    await apiJson("/api/firmware/url",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({otaUrl:$("otaUrl").value})});
+    showToast("OTA URL saved");
+  }catch(e){showToast(e.message,true);}
+  setBusy(false);
+}
+
+async function checkFirmwareUpdate(){
+  setBusy(true);
+  try{
+    const data=await apiJson("/api/firmware/check",{method:"POST"});
+    updateFirmwareUi(data);
+    showToast(data.updateAvailable?"Update available":"Firmware up to date");
+  }catch(e){
+    try{
+      const data=await apiJson("/api/firmware");
+      updateFirmwareUi(data);
+    }catch(_e){}
+    showToast(e.message,true);
+  }
+  setBusy(false);
+}
+
+async function upgradeFirmware(){
+  if(!confirm("Download and install firmware update? The sign will reboot."))return;
+  setBusy(true);
+  try{
+    await apiJson("/api/firmware/upgrade",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    showToast("Upgrading…");
+    pollOtaStatus();
+  }catch(e){showToast(e.message,true);setBusy(false);}
+}
+
+async function uploadFirmwareFile(file){
+  if(!file)return;
+  if(!confirm(`Install ${file.name}? The sign will reboot.`))return;
+  setBusy(true);
+  try{
+    const fd=new FormData();
+    fd.append("file",file,file.name);
+    const r=await fetch("/api/firmware/upload",{method:"POST",body:fd,credentials:"include"});
+    let data={};
+    try{data=await r.json();}catch(e){}
+    if(!r.ok)throw new Error(data.error||(`Upload failed (${r.status})`));
+    showToast("Flashing… device will reboot");
+    pollOtaStatus();
+  }catch(e){showToast(e.message,true);setBusy(false);}
 }
 
 function updateGifStatus(){
@@ -957,6 +1064,7 @@ async function loadPresets(opts={}){
   updateBanner(data);
   updateConnBar(data);
   updateTimeStatus(data);
+  updateFirmwareUi(data);
   drawPreview();
   presetsReady=true;
 }
@@ -1181,6 +1289,15 @@ async function changeAdminPassword(){
 }
 
 $("changeAdminPass").addEventListener("click",changeAdminPassword);
+$("saveOtaUrl").addEventListener("click",saveOtaUrl);
+$("checkFirmware").addEventListener("click",checkFirmwareUpdate);
+$("upgradeFirmware").addEventListener("click",upgradeFirmware);
+$("pickFirmware").addEventListener("click",()=>$("firmwareFile").click());
+$("firmwareFile").addEventListener("change",e=>{
+  selectedFirmwareFile=e.target.files&&e.target.files[0]?e.target.files[0]:null;
+  $("uploadFirmware").disabled=!selectedFirmwareFile||busy;
+});
+$("uploadFirmware").addEventListener("click",()=>uploadFirmwareFile(selectedFirmwareFile));
 $("connectWifi").addEventListener("click",async()=>{
   setBusy(true);
   try{

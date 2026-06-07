@@ -6,6 +6,7 @@
 #include "time_sync.h"
 
 #include "web_auth.h"
+#include "ota_update.h"
 
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
@@ -96,6 +97,39 @@ void appendTimeFields(JsonObject obj) {
   obj["timeSource"] = timeSyncSourceString(timeSyncSource());
 }
 
+void appendFirmwareFields(JsonObject obj) {
+  const OtaStatus ota = otaUpdateStatus();
+  obj["firmwareVersion"] = otaUpdateVersion();
+  obj["otaUrl"] = otaUpdateUrl();
+  obj["otaState"] = otaUpdateStateString(ota.state);
+  obj["otaProgress"] = ota.progress;
+  obj["otaUpdateAvailable"] = ota.updateAvailable;
+  if (ota.remoteVersion[0] != '\0') {
+    obj["otaRemoteVersion"] = ota.remoteVersion;
+  }
+  if (ota.lastError[0] != '\0') {
+    obj["otaError"] = ota.lastError;
+  }
+}
+
+void appendOtaStatusJson(JsonObject obj) {
+  const OtaStatus ota = otaUpdateStatus();
+  obj["version"] = otaUpdateVersion();
+  obj["otaUrl"] = otaUpdateUrl();
+  obj["state"] = otaUpdateStateString(ota.state);
+  obj["progress"] = ota.progress;
+  obj["updateAvailable"] = ota.updateAvailable;
+  if (ota.remoteVersion[0] != '\0') {
+    obj["remoteVersion"] = ota.remoteVersion;
+  }
+  if (ota.remoteBinUrl[0] != '\0') {
+    obj["remoteBinUrl"] = ota.remoteBinUrl;
+  }
+  if (ota.lastError[0] != '\0') {
+    obj["error"] = ota.lastError;
+  }
+}
+
 bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   if (obj["contentType"].is<const char *>()) {
     preset.contentType = contentTypeFromString(obj["contentType"]);
@@ -176,6 +210,7 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
   appendPlaylistFields(root);
   appendTimezoneFields(root);
   appendTimeFields(root);
+  appendFirmwareFields(root);
   appendWifiStatus(root);
 
   String body;
@@ -664,6 +699,114 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
         if (final) {
           uploadFile.close();
         }
+      });
+
+  server.on("/api/firmware", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    appendOtaStatusJson(root);
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+  });
+
+  server.on("/api/firmware/url", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
+              if (index + len != total) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, data, len)) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const char *otaUrl = doc["otaUrl"] | "";
+              if (!otaUpdateSetUrl(otaUrl)) {
+                request->send(400, "application/json", "{\"error\":\"invalid ota url\"}");
+                return;
+              }
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/firmware/check", HTTP_POST, [](AsyncWebServerRequest *request) {
+    AUTH(request);
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    if (!otaUpdateCheckRemote()) {
+      root["ok"] = false;
+      appendOtaStatusJson(root);
+      String body;
+      serializeJson(doc, body);
+      request->send(400, "application/json", body);
+      return;
+    }
+    root["ok"] = true;
+    appendOtaStatusJson(root);
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+  });
+
+  server.on("/api/firmware/upgrade", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
+              if (index + len != total) {
+                return;
+              }
+              const char *urlOverride = nullptr;
+              if (len > 0) {
+                JsonDocument doc;
+                if (!deserializeJson(doc, data, len)) {
+                  request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                  return;
+                }
+                if (doc["url"].is<const char *>()) {
+                  urlOverride = doc["url"];
+                }
+              }
+              if (!otaUpdateStartUpgrade(urlOverride)) {
+                JsonDocument doc;
+                JsonObject root = doc.to<JsonObject>();
+                root["ok"] = false;
+                appendOtaStatusJson(root);
+                String body;
+                serializeJson(doc, body);
+                request->send(400, "application/json", body);
+                return;
+              }
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on(
+      "/api/firmware/upload",
+      HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        AUTH(request);
+        const OtaStatus ota = otaUpdateStatus();
+        if (ota.state == OtaState::Error) {
+          JsonDocument doc;
+          JsonObject root = doc.to<JsonObject>();
+          root["ok"] = false;
+          appendOtaStatusJson(root);
+          String body;
+          serializeJson(doc, body);
+          request->send(400, "application/json", body);
+          return;
+        }
+        request->send(200, "application/json", "{\"ok\":true}");
+      },
+      [](AsyncWebServerRequest *request, const String &filename, size_t index, uint8_t *data, size_t len,
+         bool final) {
+        if (index == 0) {
+          AUTH_BODY(request, index);
+          otaUpdateAbortUpload();
+        }
+        if (!otaUpdateWriteChunk(data, len, index, final ? index + len : 0, final)) {
+          return;
+        }
+        (void)filename;
       });
 
   server.onNotFound([](AsyncWebServerRequest *request) {
