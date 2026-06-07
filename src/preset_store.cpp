@@ -13,6 +13,13 @@
 namespace {
 constexpr char kNs[] = "presets";
 constexpr uint8_t kDefaultBrightness = 10;
+
+void assignJsonString(JsonVariantConst value, char *dest, size_t destSize) {
+  if (value.isNull()) {
+    return;
+  }
+  strlcpy(dest, value.as<const char *>(), destSize);
+}
 }  // namespace
 
 const char *contentTypeToString(ContentType type) {
@@ -225,12 +232,8 @@ void PresetStore::loadAll() {
 
     SignPreset preset;
     setDefaults(preset);
-    if (doc["text"].is<const char *>()) {
-      strlcpy(preset.text, doc["text"], sizeof(preset.text));
-    }
-    if (doc["label"].is<const char *>()) {
-      strlcpy(preset.label, doc["label"], sizeof(preset.label));
-    }
+    assignJsonString(doc["text"], preset.text, sizeof(preset.text));
+    assignJsonString(doc["label"], preset.label, sizeof(preset.label));
     preset.scroll = doc["scroll"] | preset.scroll;
     preset.scrollDelayMs = doc["scrollDelayMs"] | preset.scrollDelayMs;
     if (doc["brightness"].is<int>() && i == activeIndex_) {

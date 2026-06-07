@@ -64,7 +64,7 @@ bool tryAcceptNtpTime(unsigned long now) {
 }  // namespace
 
 void timeSyncBegin() {
-  applyPosixTimezone(kTimezones[0].posix);
+  // Timezone is loaded from NVS in PresetStore::loadAll() via timeSyncApplyTimezone().
 }
 
 void timeSyncApplyTimezone(const char *timezoneId) {

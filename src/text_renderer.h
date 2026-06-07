@@ -4,8 +4,8 @@
 
 #include <cstdint>
 
-// Vertical band reserved above the standard 8-row GFX glyph for carons (in textSize units).
-constexpr int kTextCaronBandRows = 2;
+// Space above the 8-row GFX glyph: 2-row caron + 1-row gap (in textSize units).
+constexpr int kTextCaronBandRows = 3;
 constexpr int kTextBodyBandRows = 8;
 
 int textLinePixelWidth(const char *text, int textSize);

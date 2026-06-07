@@ -83,8 +83,10 @@ bool mapExtendedGlyph(uint32_t codepoint, char &base, AccentKind &accent) {
 
 void drawCaron(Adafruit_GFX *gfx, int x, int y, int textSize, uint16_t color) {
   // Caron (ˇ): top row wings at cols 0 and 2, center point at col 1 below.
+  // Shift 1 native pixel right; band above body includes a 1-row gap below the caron.
   static const uint8_t kCaronRows[] = {0b10100, 0b01000};
 
+  x += textSize;
   for (int row = 0; row < 2; row++) {
     const uint8_t bits = kCaronRows[row];
     for (int col = 0; col < 5; col++) {

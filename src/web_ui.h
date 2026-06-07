@@ -595,14 +595,22 @@ function showSections(){
   drawPreview();
 }
 
-function slotLabel(p){
+function slotLabel(p,slotIndex){
+  if(slotIndex===selectedSlot){
+    const draftLabel=$("slotLabel").value.trim();
+    if(draftLabel)return draftLabel.slice(0,12);
+  }
   if(!p)return"empty";
   if(p.label&&p.label.trim())return p.label.trim().slice(0,12);
   if(p.contentType==="effect")return(p.effectLabel||p.effectId||"Effect").slice(0,12);
   if(p.contentType==="clock")return"Clock";
   if(p.contentType==="countdown")return"Countdown";
   if(p.contentType==="gif"&&p.hasGif)return"GIF";
-  const t=(p.text||"").split("\n")[0].trim();
+  let t=(p.text||"").split("\n")[0].trim();
+  if(slotIndex===selectedSlot){
+    const draft=messageTextValue().split("\n")[0].trim();
+    if(draft)t=draft;
+  }
   return(t||"Message").slice(0,12);
 }
 
@@ -691,7 +699,7 @@ function renderSlots(){
     if(i===activeSlot)cls+=" live";
     if(i===selectedSlot&&isDirty())cls+=" dirty";
     b.className=cls;
-    b.innerHTML=`<span class="slot-num">${i+1}</span><span class="slot-label">${slotLabel(p)}</span>`;
+    b.innerHTML=`<span class="slot-num">${i+1}</span><span class="slot-label">${slotLabel(p,i)}</span>`;
     b.onclick=()=>selectSlot(i);
     b.ondblclick=()=>activateSlot(i);
     el.appendChild(b);
@@ -703,7 +711,7 @@ function renderSlots(){
 
 function updateSlotInfo(){
   const p=presets[selectedSlot]||{};
-  $("slotInfo").textContent=`Editing slot ${selectedSlot+1} · Live: slot ${activeSlot+1} · ${slotLabel(p)}`;
+  $("slotInfo").textContent=`Editing slot ${selectedSlot+1} · Live: slot ${activeSlot+1} · ${slotLabel(p,selectedSlot)}`;
 }
 
 function renderPlaylist(){
@@ -996,33 +1004,36 @@ function drawPreview(){
   ctx.fillRect(0,blockTop,PANEL_W,blockH);
   const glyphH=m.size*8;
   const caronH=m.size*2;
+  const caronGap=m.size;
+  const caronBand=caronH+caronGap;
   ctx.fillStyle=`rgb(${rgb.r},${rgb.g},${rgb.b})`;
   const scrolling=$("scroll").checked;
   let totalH=0;
   for(let i=0;i<rowCount;i++){
-    if(i>0&&lineHasCaron(lines[i]))totalH+=caronH;
-    totalH+=lineHasCaron(lines[i])?caronH+glyphH:glyphH;
+    if(i>0&&lineHasCaron(lines[i]))totalH+=caronBand;
+    totalH+=lineHasCaron(lines[i])?caronBand+glyphH:glyphH;
   }
   let rowY=blockTop+Math.floor((blockH-totalH)/2);
   for(let i=0;i<rowCount;i++){
     const line=lines[i]||"";
     const textW=utf8CodepointCount(line)*6*m.size;
     const x=(scrolling?previewScroll:Math.floor((PANEL_W-textW)/2))+contentOffsetX;
-    if(i>0&&lineHasCaron(line))rowY+=caronH;
+    if(i>0&&lineHasCaron(line))rowY+=caronBand;
     const hasCaron=lineHasCaron(line);
-    const y=hasCaron?rowY+caronH:rowY;
+    const y=hasCaron?rowY+caronBand:rowY;
     let cx=x;
     for(const ch of line){
       if(cx>=PANEL_W)break;
       if(isExtendedLatin(ch)){
-        ctx.fillRect(cx+m.size*0,y-caronH+m.size*0,m.size,m.size);
-        ctx.fillRect(cx+m.size*2,y-caronH+m.size*0,m.size,m.size);
-        ctx.fillRect(cx+m.size*1,y-caronH+m.size,m.size,m.size);
+        const caronY=y-caronBand;
+        ctx.fillRect(cx+m.size*1,caronY+m.size*0,m.size,m.size);
+        ctx.fillRect(cx+m.size*3,caronY+m.size*0,m.size,m.size);
+        ctx.fillRect(cx+m.size*2,caronY+m.size*1,m.size,m.size);
       }
       ctx.fillRect(cx,y,glyphH*0.75,glyphH);
       cx+=6*m.size;
     }
-    rowY+=hasCaron?caronH+glyphH:glyphH;
+    rowY+=hasCaron?caronBand+glyphH:glyphH;
   }
   $("previewCap").textContent=`${glyphHeightPx}px font · ${rowCount} row(s) · size ${m.size}`;
 }
@@ -1062,6 +1073,7 @@ async function loadPresets(opts={}){
   if(typeof data.playlistDwellMs==="number")playlistDwellMs=data.playlistDwellMs;
   renderPlaylist();
   if(data.timezoneId)$("timezone").value=data.timezoneId;
+  else $("timezone").value="CET";
   if(!keepSelection)selectedSlot=activeSlot;
   else selectedSlot=Math.min(Math.max(prevSlot,0),presets.length-1);
   if(!keepForm)fillForm(presets[selectedSlot]||{});
@@ -1108,7 +1120,7 @@ async function saveSlot(){
     const body={...presetFormBody(),id:selectedSlot};
     await apiJson("/api/presets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     showToast(`Saved slot ${selectedSlot+1}`);
-    await loadPresets({keepSelection:true,keepForm:true});
+    await loadPresets({keepSelection:true,keepForm:false});
     renderSlots();
   }catch(e){showToast(e.message,true);}
   setBusy(false);

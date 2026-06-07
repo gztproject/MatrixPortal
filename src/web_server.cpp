@@ -34,6 +34,36 @@ size_t uploadTotalBytes = 0;
       return;                     \
   } while (0)
 
+String *accumulateRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                              size_t index, size_t total) {
+  if (index == 0) {
+    request->_tempObject = new String();
+    static_cast<String *>(request->_tempObject)->reserve(total + 1);
+  }
+  auto *body = static_cast<String *>(request->_tempObject);
+  if (body == nullptr) {
+    return nullptr;
+  }
+  body->concat(reinterpret_cast<const char *>(data), len);
+  if (index + len < total) {
+    return nullptr;
+  }
+  return body;
+}
+
+void releaseRequestBody(AsyncWebServerRequest *request) {
+  if (request->_tempObject != nullptr) {
+    delete static_cast<String *>(request->_tempObject);
+    request->_tempObject = nullptr;
+  }
+}
+
+void jsonAssignString(JsonObject obj, const char *key, char *dest, size_t destSize) {
+  if (!obj[key].isNull()) {
+    strlcpy(dest, obj[key].as<const char *>(), destSize);
+  }
+}
+
 uint32_t parseHexColor(const char *hex) {
   if (!hex || hex[0] != '#') {
     return 0xFFFFFF;
@@ -149,12 +179,8 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   } else if (obj["rowCount"].is<uint8_t>()) {
     preset.rowCount = obj["rowCount"];
   }
-  if (obj["text"].is<const char *>()) {
-    strlcpy(preset.text, obj["text"], sizeof(preset.text));
-  }
-  if (obj["label"].is<const char *>()) {
-    strlcpy(preset.label, obj["label"], sizeof(preset.label));
-  }
+  jsonAssignString(obj, "text", preset.text, sizeof(preset.text));
+  jsonAssignString(obj, "label", preset.label, sizeof(preset.label));
   if (obj["scroll"].is<bool>()) {
     preset.scroll = obj["scroll"];
   }
@@ -323,25 +349,31 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on(AsyncURIMatcher::exact("/api/presets"), HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              if (index + len == total) {
-                JsonDocument doc;
-                if (deserializeJson(doc, data, len)) {
-                  request->send(400, "application/json", "{\"error\":\"invalid json\"}");
-                  return;
-                }
-                const int id = doc["id"] | presetStore->activeIndex();
-                if (id < 0 || id >= PRESET_COUNT) {
-                  request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
-                  return;
-                }
-                SignPreset preset = presetStore->get(id);
-                if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
-                  request->send(400, "application/json", "{\"error\":\"invalid preset\"}");
-                  return;
-                }
-                displayEngine->applyPreset(preset, id);
-                request->send(200, "application/json", "{\"ok\":true}");
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
+                return;
               }
+              JsonDocument doc;
+              if (deserializeJson(doc, body->c_str())) {
+                releaseRequestBody(request);
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              const int id = doc["id"] | presetStore->activeIndex();
+              if (id < 0 || id >= PRESET_COUNT) {
+                releaseRequestBody(request);
+                request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
+                return;
+              }
+              SignPreset preset = presetStore->get(id);
+              if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
+                releaseRequestBody(request);
+                request->send(400, "application/json", "{\"error\":\"invalid preset\"}");
+                return;
+              }
+              displayEngine->applyPreset(preset, id);
+              releaseRequestBody(request);
+              request->send(200, "application/json", "{\"ok\":true}");
             });
 
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -382,25 +414,30 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/preview", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              if (index + len != total) {
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, data, len)) {
+              if (deserializeJson(doc, body->c_str())) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
               }
               const int slot = doc["slot"] | doc["id"] | 0;
               if (slot < 0 || slot >= PRESET_COUNT) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid slot\"}");
                 return;
               }
               SignPreset preset = presetStore->get(slot);
               if (!jsonToPreset(doc.as<JsonObject>(), preset)) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid preview\"}");
                 return;
               }
               displayEngine->previewOnPanel(preset, slot);
+              releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
@@ -456,21 +493,25 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/timezone", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              if (index + len != total) {
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, data, len)) {
+              if (deserializeJson(doc, body->c_str())) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
               }
               const char *timezoneId = doc["timezoneId"] | timeSyncDefaultTimezoneId();
               if (!timeSyncIsKnownTimezoneId(timezoneId)) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid timezone\"}");
                 return;
               }
               presetStore->setTimezoneId(timezoneId);
               displayEngine->refreshTimeDisplay();
+              releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
@@ -543,11 +584,13 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              if (index + len != total) {
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, data, len)) {
+              if (deserializeJson(doc, body->c_str())) {
+                releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
               }
@@ -575,8 +618,12 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 }
                 presetStore->setPlaylist(playlist);
               }
-              if (doc["timezoneId"].is<const char *>()) {
-                presetStore->setTimezoneId(doc["timezoneId"]);
+              if (!doc["timezoneId"].isNull()) {
+                char tz[TIMEZONE_ID_MAX + 1]{};
+                strlcpy(tz, doc["timezoneId"].as<const char *>(), sizeof(tz));
+                if (timeSyncIsKnownTimezoneId(tz)) {
+                  presetStore->setTimezoneId(tz);
+                }
               }
               JsonArray arr = doc["presets"].as<JsonArray>();
               if (!arr.isNull()) {
@@ -593,6 +640,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
               }
               displayEngine->selectPreset(presetStore->activeIndex());
               displayEngine->refreshTimeDisplay();
+              releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 

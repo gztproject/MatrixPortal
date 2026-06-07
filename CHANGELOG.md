@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.2 — 2026-06-05
+
+### Fixed
+
+- Preset save/load: accumulate POST body so text and slot labels persist in NVS and backup JSON
+- Timezone survives reboot (no longer reset to CET on startup)
+
+### Changed
+
+- Caron accents (č/š/ž): shifted 1 px right and 1 px gap above glyph (scaled with text size)
+
 ## v0.2.1 — 2026-06-05
 
 ### Fixed
