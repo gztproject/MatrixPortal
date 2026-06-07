@@ -871,13 +871,15 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/firmware/upgrade", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              if (index + len != total) {
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
                 return;
               }
               const char *urlOverride = nullptr;
-              if (len > 0) {
+              if (body->length() > 0) {
                 JsonDocument doc;
-                if (!deserializeJson(doc, data, len)) {
+                if (deserializeJson(doc, body->c_str(), body->length())) {
+                  releaseRequestBody(request);
                   request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                   return;
                 }
@@ -890,11 +892,13 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 JsonObject root = doc.to<JsonObject>();
                 root["ok"] = false;
                 appendOtaStatusJson(root);
-                String body;
-                serializeJson(doc, body);
-                request->send(400, "application/json", body);
+                String response;
+                serializeJson(doc, response);
+                releaseRequestBody(request);
+                request->send(400, "application/json", response);
                 return;
               }
+              releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 

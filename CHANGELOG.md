@@ -9,6 +9,7 @@
 - Save/restore API returns an error when NVS write fails instead of reporting success
 - Restore POST parses JSON with explicit body length
 - Scrolling text shear at panel midline: clear the full DMA back buffer before each text redraw instead of a partial virtual fillRect (stale pixels at 13-row tile boundaries showed through with double buffering)
+- OTA **Upgrade from URL** rejected valid `{}` body due to inverted JSON parse check
 
 ## v0.2.5 — 2026-06-07
 
