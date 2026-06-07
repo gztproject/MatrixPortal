@@ -7,7 +7,7 @@ constexpr int kPinUp = 6;
 constexpr int kPinDown = 7;
 constexpr unsigned long kDebounceMs = 150;
 constexpr unsigned long kHoldMs = 600;
-constexpr unsigned long kRepeatMs = 750;
+constexpr unsigned long kRepeatMs = 500;
 constexpr int kBrightnessStep = 10;
 
 DisplayEngine *engine = nullptr;
