@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.5 — 2026-06-07
+
+### Added
+
+- Display on/off: UP+DOWN hold toggles the panel; Web UI checkbox; off state uses 5% brightness and a red status pixel
+- Blue quick color preset (Red, Green, Blue, Amber, White)
+- Clock color picker in Web UI (panel already used preset colour)
+
+### Changed
+
+- DMA double buffering for smoother updates; clock redraws only when the formatted time changes
+
+### Fixed
+
+- Preset switch clears both DMA buffers so no leftover artefacts from the previous preset
+- Animated effects (chevrons, strobe, pulse, etc.) flip the buffer only when a frame is redrawn (fixes jumping with double buffer)
+
 ## v0.2.4 — 2026-06-07
 
 ### Fixed

@@ -154,10 +154,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div id="colorSection" class="hidden">
 <label for="color">Color</label>
 <div class="colors">
-<button type="button" class="color-btn active" data-color="#FFFFFF">White</button>
 <button type="button" class="color-btn" data-color="#FF0000">Red</button>
 <button type="button" class="color-btn" data-color="#00FF00">Green</button>
+<button type="button" class="color-btn" data-color="#0000FF">Blue</button>
 <button type="button" class="color-btn" data-color="#FFAA00">Amber</button>
+<button type="button" class="color-btn active" data-color="#FFFFFF">White</button>
 </div>
 <input type="color" id="color" value="#ffffff">
 </div>
@@ -595,7 +596,7 @@ function showSections(){
   const showParam=contentType==="effect"&&selectedEffect==="progress_bar";
   $("effectParam").classList.toggle("hidden",!showParam);
   $("effectParamLabel").classList.toggle("hidden",!showParam);
-  const showColor=contentType==="text"||(contentType==="effect"&&effectIsMonochrome(selectedEffect));
+  const showColor=contentType==="text"||contentType==="clock"||(contentType==="effect"&&effectIsMonochrome(selectedEffect));
   $("colorSection").classList.toggle("hidden",!showColor);
   setSegActive($("contentTypeSeg"),"type",contentType);
   setSegActive($("rowSeg"),"rows",rowCount);
@@ -959,14 +960,15 @@ function drawPreview(){
   if(contentType==="clock"){
     const showSec=$("clockSeconds").checked;
     const showDate=$("clockDate").checked;
-    ctx.fillStyle="#fff";
+    const rgb=hexToRgb(selectedColor);
+    ctx.fillStyle=`rgb(${rgb.r},${rgb.g},${rgb.b})`;
     ctx.font="14px monospace";
     ctx.fillText(showSec?"12:34:56":"12:34",showSec?12:28,showDate?18:32);
     if(showDate){
       ctx.font="10px monospace";
       ctx.fillText("05.06.2026",16,38);
     }
-    $("previewCap").textContent="Clock preview (needs NTP)";
+    $("previewCap").textContent=`Clock preview · ${selectedColor}`;
     return;
   }
   if(contentType==="countdown"){

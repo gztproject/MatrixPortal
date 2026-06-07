@@ -133,7 +133,7 @@ bool tickEmergency() {
 
   const unsigned long now = millis();
   if (now - lastPhaseMs < duration) {
-    return true;
+    return false;
   }
 
   lastPhaseMs = now;
@@ -480,32 +480,34 @@ bool effectRendererTick(EffectId id) {
 
     case EffectId::BlueEmergency:
     case EffectId::YellowEmergency:
-      tickEmergency();
-      return true;
+      return tickEmergency();
 
     case EffectId::FullStrobe:
       if (now - lastStrobeMs >= 150) {
         lastStrobeMs = now;
         strobeLit = !strobeLit;
         drawFullStrobe();
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::Pulse:
       if (now - lastPulseMs >= 40) {
         lastPulseMs = now;
         pulsePhase++;
         drawPulse();
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::BorderChase:
       if (now - lastBorderMs >= 60) {
         lastBorderMs = now;
         borderPos = (borderPos + 1) % (2 * (PANEL_RES_X + PANEL_RES_Y));
         drawBorderChase();
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::ProgressBar:
       return false;
@@ -515,24 +517,27 @@ bool effectRendererTick(EffectId id) {
         lastLifeMs = now;
         stepLife();
         drawLife();
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::ArrowLeft:
       if (now - lastArrowMs >= kArrowMs) {
         lastArrowMs = now;
         arrowPhase = (arrowPhase + 1) % kArrowSteps;
         drawArrowSequence(false);
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::ArrowRight:
       if (now - lastArrowMs >= kArrowMs) {
         lastArrowMs = now;
         arrowPhase = (arrowPhase + 1) % kArrowSteps;
         drawArrowSequence(true);
+        return true;
       }
-      return true;
+      return false;
 
     case EffectId::Stop:
     case EffectId::HazardTriangle:

@@ -277,7 +277,7 @@ void DisplayEngine::applyRuntimePreset(int gifSlotIndex) {
 
   resolveActiveContentType();
 
-  panel_->fillScreen(0);
+  clearAllBuffers();
 
   if (activeContentType_ == ContentType::Effect) {
     effectRendererApply(static_cast<EffectId>(runtime_.effectId), runtime_.colorR, runtime_.colorG,
@@ -304,6 +304,7 @@ void DisplayEngine::applyRuntimePreset(int gifSlotIndex) {
 
   textLineCount_ = splitTextLines(runtime_, textLines_, runtime_.rowCount);
   textLayout_ = computeTextLayout(runtime_, textLines_, textLineCount_);
+  redrawTextBlock();
 }
 
 bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
@@ -321,6 +322,18 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   dma_->setBrightness8(level);
 }
 
+void DisplayEngine::clearAllBuffers() {
+  if (!panel_ || !dma_) {
+    return;
+  }
+  panel_->fillScreen(0);
+  if (dma_->getCfg().double_buff) {
+    dma_->flipDMABuffer();
+    panel_->fillScreen(0);
+    dma_->flipDMABuffer();
+  }
+}
+
 void DisplayEngine::finishFrame() {
   if (dma_) {
     dma_->flipDMABuffer();
@@ -333,7 +346,7 @@ void DisplayEngine::showDisplayOffIndicator() {
   }
   gifPlayerClose();
   applyBrightness(DISPLAY_OFF_BRIGHTNESS);
-  panel_->fillScreen(0);
+  clearAllBuffers();
   panel_->drawPixel(0, 0, panel_->color565(255, 0, 0));
   dirty_ = false;
   finishFrame();
