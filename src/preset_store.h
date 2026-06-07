@@ -9,6 +9,7 @@
 #define TEXT_HEIGHT_PX_MAX 52
 #define TEXT_HEIGHT_PX_DEFAULT 26
 #define GLOBAL_BRIGHTNESS_DEFAULT 10
+#define DISPLAY_OFF_BRIGHTNESS 5
 #define PLAYLIST_DWELL_MS_DEFAULT 8000
 #define PLAYLIST_DWELL_MS_MIN 2000
 #define PLAYLIST_DWELL_MS_MAX 3600000
@@ -66,6 +67,8 @@ class PresetStore {
   void setPlaylist(const PlaylistSettings &settings, bool persist = true);
   const char *timezoneId() const;
   void setTimezoneId(const char *id, bool persist = true);
+  bool displayOn() const;
+  void setDisplayOn(bool on, bool persist = true);
 
  private:
   void loadAll();
@@ -74,6 +77,7 @@ class PresetStore {
   void saveGlobalBrightness();
   void savePlaylist();
   void saveTimezoneId();
+  void saveDisplayOn();
   void migrateLegacySign();
   void setDefaults(SignPreset &preset) const;
 
@@ -82,4 +86,5 @@ class PresetStore {
   uint8_t globalBrightness_ = GLOBAL_BRIGHTNESS_DEFAULT;
   PlaylistSettings playlist_{};
   char timezoneId_[TIMEZONE_ID_MAX + 1]{};
+  bool displayOn_ = true;
 };

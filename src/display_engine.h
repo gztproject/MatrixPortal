@@ -19,6 +19,9 @@ class DisplayEngine {
   void setGlobalBrightness(uint8_t percent);
   void adjustGlobalBrightness(int delta);
   uint8_t globalBrightness() const;
+  bool displayOn() const;
+  void setDisplayOn(bool on, bool persist = true);
+  void toggleDisplayOn();
   void refreshTimeDisplay();
   void tick();
 
@@ -35,6 +38,8 @@ class DisplayEngine {
   void applyRuntimePreset(int gifSlotIndex);
   void resolveActiveContentType();
   void applyBrightness(uint8_t brightnessPercent);
+  void showDisplayOffIndicator();
+  void applyDisplayPowerState();
   TextLayout computeTextLayout(const SignPreset &preset, char lines[][201], int lineCount) const;
   int splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const;
   int textBlockPixelWidth(const SignPreset &preset, const TextLayout &layout,

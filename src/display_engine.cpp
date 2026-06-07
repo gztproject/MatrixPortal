@@ -114,6 +114,9 @@ void DisplayEngine::begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, P
   effectRendererBegin(panel_);
   playlistSlotSinceMs_ = millis();
   selectPreset(store_->activeIndex());
+  if (!store_->displayOn()) {
+    showDisplayOffIndicator();
+  }
 }
 
 int DisplayEngine::activeIndex() const {
@@ -131,18 +134,42 @@ uint8_t DisplayEngine::globalBrightness() const {
   return store_ ? store_->globalBrightness() : GLOBAL_BRIGHTNESS_DEFAULT;
 }
 
+bool DisplayEngine::displayOn() const {
+  DisplayLock lock;
+  return store_ ? store_->displayOn() : true;
+}
+
+void DisplayEngine::setDisplayOn(bool on, bool persist) {
+  DisplayLock lock;
+  if (!store_) {
+    return;
+  }
+  store_->setDisplayOn(on, persist);
+  applyDisplayPowerState();
+}
+
+void DisplayEngine::toggleDisplayOn() {
+  DisplayLock lock;
+  if (!store_) {
+    return;
+  }
+  setDisplayOn(!store_->displayOn());
+}
+
 void DisplayEngine::setGlobalBrightness(uint8_t percent) {
   DisplayLock lock;
   if (!store_) {
     return;
   }
   store_->setGlobalBrightness(percent);
-  applyBrightness(store_->globalBrightness());
+  if (store_->displayOn()) {
+    applyBrightness(store_->globalBrightness());
+  }
 }
 
 void DisplayEngine::adjustGlobalBrightness(int delta) {
   DisplayLock lock;
-  if (!store_ || delta == 0) {
+  if (!store_ || delta == 0 || !store_->displayOn()) {
     return;
   }
   const int current = static_cast<int>(store_->globalBrightness());
@@ -235,6 +262,11 @@ void DisplayEngine::applyRuntimePreset(int gifSlotIndex) {
     runtime_.rowCount = 4;
   }
 
+  if (store_ && !store_->displayOn()) {
+    showDisplayOffIndicator();
+    return;
+  }
+
   applyBrightness(store_->globalBrightness());
   gifPlayerClose();
   scrollOffset_ = PANEL_RES_X;
@@ -286,6 +318,28 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   }
   const uint8_t level = (255U * brightnessPercent) / 100U;
   dma_->setBrightness8(level);
+}
+
+void DisplayEngine::showDisplayOffIndicator() {
+  if (!panel_ || !dma_) {
+    return;
+  }
+  gifPlayerClose();
+  applyBrightness(DISPLAY_OFF_BRIGHTNESS);
+  panel_->fillScreen(0);
+  panel_->drawPixel(0, 0, panel_->color565(255, 0, 0));
+  dirty_ = false;
+}
+
+void DisplayEngine::applyDisplayPowerState() {
+  if (!store_) {
+    return;
+  }
+  if (!store_->displayOn()) {
+    showDisplayOffIndicator();
+    return;
+  }
+  applyActivePreset();
 }
 
 DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &preset,
@@ -609,6 +663,10 @@ void DisplayEngine::tick() {
 
   timeSyncTick();
   tickPlaylist();
+
+  if (!store_->displayOn()) {
+    return;
+  }
 
   switch (activeContentType_) {
     case ContentType::Effect:

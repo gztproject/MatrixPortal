@@ -100,6 +100,7 @@ void appendWifiStatus(JsonObject obj) {
 
 void appendGlobalBrightness(JsonObject obj) {
   obj["brightness"] = presetStore->globalBrightness();
+  obj["displayOn"] = presetStore->displayOn();
 }
 
 void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
@@ -357,6 +358,29 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               displayEngine->setGlobalBrightness(static_cast<uint8_t>(brightness));
+              request->send(200, "application/json", "{\"ok\":true}");
+            });
+
+  server.on("/api/display", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
+            [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+              AUTH_BODY(request, index);
+              String *body = accumulateRequestBody(request, data, len, index, total);
+              if (body == nullptr) {
+                return;
+              }
+              JsonDocument doc;
+              if (deserializeJson(doc, body->c_str()) || doc.overflowed()) {
+                releaseRequestBody(request);
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+              }
+              if (!doc["on"].is<bool>()) {
+                releaseRequestBody(request);
+                request->send(400, "application/json", "{\"error\":\"on must be boolean\"}");
+                return;
+              }
+              displayEngine->setDisplayOn(doc["on"].as<bool>());
+              releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
@@ -620,6 +644,9 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
               if (doc["brightness"].is<int>()) {
                 displayEngine->setGlobalBrightness(
                     static_cast<uint8_t>(doc["brightness"].as<int>()));
+              }
+              if (doc["displayOn"].is<bool>()) {
+                displayEngine->setDisplayOn(doc["displayOn"].as<bool>());
               }
               if (doc["playlistEnabled"].is<bool>() || doc["slotMask"].is<int>() ||
                   doc["dwellMs"].is<int>() || doc["playlistDwellMs"].is<int>()) {

@@ -65,6 +65,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <div class="banner" id="banner"></div>
 
 <section id="brightnessSection">
+<label class="row"><input type="checkbox" id="displayOn" checked> Display on</label>
+<p class="hint">Off shows a dim red dot at top-left. Hold UP+DOWN together on the panel to toggle.</p>
 <label for="bright">Panel brightness <span id="brightVal">10</span>%</label>
 <input type="range" id="bright" min="1" max="100" value="10">
 <p class="hint">Applies immediately to the sign — not saved per preset.</p>
@@ -85,7 +87,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 <section id="playlistSection">
 <label class="row"><input type="checkbox" id="playlistEnabled"> Auto-rotate presets</label>
-<p class="hint">Cycles checked slots on the panel. Short press UP/DOWN still switches manually; hold for brightness in 10% steps.</p>
+<p class="hint">Cycles checked slots on the panel. Short press UP/DOWN switches presets; hold both to toggle display; hold one for brightness.</p>
 <label>Dwell time (seconds)</label>
 <input type="number" id="playlistDwell" min="2" max="3600" value="8">
 <div class="seg" id="playlistSlots"></div>
@@ -298,6 +300,7 @@ const EFFECT_DEFAULT_COLORS={
   arrow_right:"#FFAA00"
 };
 let globalBrightness=10;
+let displayOn=true;
 let effects=[];
 let presets=[];
 let presetsReady=false;
@@ -765,8 +768,9 @@ function updateConnBar(c){
   connData=c||connData;
   let s="";
   const ver=firmwareVersion||c.firmwareVersion||"";
-  if(c.staConnected)s=`Home ${c.staIp} · ${c.staRssi} dBm · v${ver||"?"} · brightness ${globalBrightness}%`;
-  else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · v${ver||"?"} · brightness ${globalBrightness}%`;
+  const power=displayOn?`brightness ${globalBrightness}%`:"display off";
+  if(c.staConnected)s=`Home ${c.staIp} · ${c.staRssi} dBm · v${ver||"?"} · ${power}`;
+  else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · v${ver||"?"} · ${power}`;
   $("connBar").textContent=s;
 }
 
@@ -1070,8 +1074,10 @@ async function loadPresets(opts={}){
   presets=data.presets||[];
   activeSlot=data.activeIndex||0;
   if(typeof data.brightness==="number")globalBrightness=data.brightness;
+  if(typeof data.displayOn==="boolean")displayOn=data.displayOn;
   $("bright").value=globalBrightness;
   $("brightVal").textContent=globalBrightness;
+  syncDisplayPowerUi();
   if(typeof data.playlistEnabled==="boolean")playlistEnabled=data.playlistEnabled;
   if(typeof data.playlistMask==="number")playlistMask=data.playlistMask&0xFF;
   if(typeof data.playlistDwellMs==="number")playlistDwellMs=data.playlistDwellMs;
@@ -1088,6 +1094,24 @@ async function loadPresets(opts={}){
   updateFirmwareUi(data);
   drawPreview();
   presetsReady=true;
+}
+
+function syncDisplayPowerUi(){
+  const on=!!displayOn;
+  const el=$("displayOn");
+  if(el)el.checked=on;
+  $("bright").disabled=!on;
+}
+
+async function saveDisplayPower(){
+  try{
+    const on=$("displayOn").checked;
+    await apiJson("/api/display",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({on})});
+    displayOn=on;
+    syncDisplayPowerUi();
+    updateConnBar(connData);
+    showToast(on?"Display on":"Display off");
+  }catch(e){showToast(e.message,true);}
 }
 
 async function saveBrightness(val){
@@ -1244,6 +1268,7 @@ $("countdownAt").addEventListener("input",()=>{drawPreview();renderSlots();});
   $(id).addEventListener("change",()=>{drawPreview();renderSlots();});
 });
 $("timezone").addEventListener("change",saveTimezone);
+$("displayOn").addEventListener("change",saveDisplayPower);
 $("syncBrowserTime").addEventListener("click",syncBrowserTime);
 document.querySelectorAll("#countdownModeSeg button").forEach(b=>b.addEventListener("click",()=>{
   countdownMode=b.dataset.mode;

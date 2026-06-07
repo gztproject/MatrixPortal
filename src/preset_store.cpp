@@ -219,6 +219,7 @@ void PresetStore::loadAll() {
   playlist_.enabled = prefs.getBool("plOn", false);
   playlist_.slotMask = prefs.getUChar("plMask", 0xFF);
   playlist_.dwellMs = clampPlaylistDwellMs(prefs.getUInt("plDwell", PLAYLIST_DWELL_MS_DEFAULT));
+  displayOn_ = prefs.getBool("dispOn", true);
   if (prefs.isKey("tzId")) {
     String tz = prefs.getString("tzId", timezoneId_);
     tz.toCharArray(timezoneId_, sizeof(timezoneId_));
@@ -374,6 +375,15 @@ void PresetStore::saveTimezoneId() {
   prefs.end();
 }
 
+void PresetStore::saveDisplayOn() {
+  Preferences prefs;
+  if (!prefs.begin(kNs, false)) {
+    return;
+  }
+  prefs.putBool("dispOn", displayOn_);
+  prefs.end();
+}
+
 bool PresetStore::duplicateSlot(int fromIndex, int toIndex) {
   if (fromIndex < 0 || fromIndex >= PRESET_COUNT || toIndex < 0 || toIndex >= PRESET_COUNT ||
       fromIndex == toIndex) {
@@ -438,6 +448,17 @@ void PresetStore::setTimezoneId(const char *id, bool persist) {
   timeSyncApplyTimezone(timezoneId_);
   if (persist) {
     saveTimezoneId();
+  }
+}
+
+bool PresetStore::displayOn() const {
+  return displayOn_;
+}
+
+void PresetStore::setDisplayOn(bool on, bool persist) {
+  displayOn_ = on;
+  if (persist) {
+    saveDisplayOn();
   }
 }
 

@@ -8,6 +8,7 @@ constexpr int kPinDown = 7;
 constexpr unsigned long kDebounceMs = 150;
 constexpr unsigned long kHoldMs = 600;
 constexpr unsigned long kRepeatMs = 500;
+constexpr unsigned long kComboMs = 400;
 constexpr int kBrightnessStep = 10;
 
 DisplayEngine *engine = nullptr;
@@ -22,6 +23,9 @@ unsigned long upHoldStartMs = 0;
 unsigned long downHoldStartMs = 0;
 bool upHoldHandled = false;
 bool downHoldHandled = false;
+unsigned long comboStartMs = 0;
+bool comboArmed = false;
+bool comboHandled = false;
 
 void onPresetDelta(int delta) {
   if (!engine) {
@@ -84,6 +88,36 @@ void buttonInputBegin(DisplayEngine *displayEngine, PresetChangeCallback callbac
 }
 
 void buttonInputTick() {
+  const int upState = digitalRead(kPinUp);
+  const int downState = digitalRead(kPinDown);
+  const unsigned long now = millis();
+
+  if (upState == LOW && downState == LOW) {
+    if (!comboArmed) {
+      comboArmed = true;
+      comboStartMs = now;
+    } else if (!comboHandled && now - comboStartMs >= kComboMs) {
+      comboHandled = true;
+      if (engine) {
+        engine->toggleDisplayOn();
+      }
+    }
+    lastUpState = upState;
+    lastDownState = downState;
+    return;
+  }
+
+  comboArmed = false;
+  if (comboHandled) {
+    if (upState == HIGH && downState == HIGH) {
+      comboHandled = false;
+    }
+    lastUpState = upState;
+    lastDownState = downState;
+    return;
+  }
+
   pollButton(kPinUp, lastUpState, lastUpMs, -1, kBrightnessStep, upHoldStartMs, upHoldHandled);
-  pollButton(kPinDown, lastDownState, lastDownMs, 1, -kBrightnessStep, downHoldStartMs, downHoldHandled);
+  pollButton(kPinDown, lastDownState, lastDownMs, 1, -kBrightnessStep, downHoldStartMs,
+             downHoldHandled);
 }
