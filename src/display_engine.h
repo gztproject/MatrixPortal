@@ -41,6 +41,7 @@ class DisplayEngine {
   void showDisplayOffIndicator();
   void applyDisplayPowerState();
   void clearAllBuffers();
+  void clearDrawBuffer();
   void finishFrame();
   TextLayout computeTextLayout(const SignPreset &preset, char lines[][201], int lineCount) const;
   int splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const;

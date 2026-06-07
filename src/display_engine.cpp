@@ -337,6 +337,16 @@ void DisplayEngine::clearAllBuffers() {
   }
 }
 
+void DisplayEngine::clearDrawBuffer() {
+  if (!panel_) {
+    return;
+  }
+  // Raw DMA fillScreen clears the whole back buffer. Partial virtual fillRect can miss
+  // pixels at 13-row tile boundaries on this panel, which shows as horizontal shear
+  // at y=26 when double buffering alternates between stale and fresh frames.
+  panel_->fillScreen(0);
+}
+
 void DisplayEngine::finishFrame() {
   if (dma_) {
     dma_->flipDMABuffer();
@@ -463,7 +473,7 @@ void DisplayEngine::redrawTextBlock() {
     return;
   }
 
-  panel_->fillRect(0, textLayout_.blockTop, PANEL_RES_X, textLayout_.blockHeight, 0);
+  clearDrawBuffer();
   const uint16_t color = textColor565(runtime_);
 
   for (int i = 0; i < textLineCount_; i++) {
@@ -499,26 +509,7 @@ void DisplayEngine::redrawTimeBlock() {
     int timeY = 0;
     int dateY = 0;
     layoutClockLines(timeLine_, dateLine_, showDate, timeSize, dateSize, timeY, dateY);
-
-    int clearTop = timeY - kTextCaronBandRows * timeSize;
-    int clearBottom = timeY + kTextBodyBandRows * timeSize;
-    if (showDate) {
-      const int dateTop = dateY - kTextCaronBandRows * dateSize;
-      const int dateBottom = dateY + kTextBodyBandRows * dateSize;
-      if (dateTop < clearTop) {
-        clearTop = dateTop;
-      }
-      if (dateBottom > clearBottom) {
-        clearBottom = dateBottom;
-      }
-    }
-    if (clearTop < 0) {
-      clearTop = 0;
-    }
-    if (clearBottom > PANEL_RES_Y) {
-      clearBottom = PANEL_RES_Y;
-    }
-    panel_->fillRect(0, clearTop, PANEL_RES_X, clearBottom - clearTop, 0);
+    clearDrawBuffer();
 
     const uint16_t color = textColor565(runtime_);
     const int timeX = (PANEL_RES_X - textLinePixelWidth(timeLine_, timeSize)) / 2;
@@ -544,10 +535,7 @@ void DisplayEngine::redrawTimeBlock() {
   const int width = textLinePixelWidth(timeLine_, textSize);
   const int x = (PANEL_RES_X - width) / 2;
   const int y = (PANEL_RES_Y - kTextBodyBandRows * textSize) / 2;
-  const int clearTop = y - kTextCaronBandRows * textSize;
-  const int clearHeight = kTextCaronBandRows * textSize + kTextBodyBandRows * textSize;
-  panel_->fillRect(0, clearTop < 0 ? 0 : clearTop, PANEL_RES_X,
-                   clearTop < 0 ? clearHeight + clearTop : clearHeight, 0);
+  clearDrawBuffer();
   drawTextLine(panel_, x, y, textSize, textColor565(runtime_), timeLine_);
   finishFrame();
 }
