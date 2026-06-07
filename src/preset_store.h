@@ -22,7 +22,7 @@ struct SignPreset {
   uint8_t effectId;
   uint8_t textHeightPx;
   uint8_t rowCount;
-  char text[201];
+  char message[201];
   char label[PRESET_LABEL_MAX + 1];
   bool scroll;
   uint16_t scrollDelayMs;

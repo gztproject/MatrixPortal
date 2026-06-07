@@ -58,17 +58,18 @@ void releaseRequestBody(AsyncWebServerRequest *request) {
   }
 }
 
-void jsonAssignString(JsonObject obj, const char *key, char *dest, size_t destSize) {
-  JsonVariantConst value = obj[key];
-  if (value.isNull()) {
+void copyJsonStringValue(JsonVariantConst value, char *dest, size_t destSize) {
+  if (value.isNull() || destSize == 0) {
     return;
   }
   if (value.is<const char *>()) {
     strlcpy(dest, value.as<const char *>(), destSize);
     return;
   }
-  const String text = value.as<String>();
-  strlcpy(dest, text.c_str(), destSize);
+  const JsonString parsed = value.as<JsonString>();
+  if (!parsed.isNull()) {
+    strlcpy(dest, parsed.c_str(), destSize);
+  }
 }
 
 void sendJsonResponse(AsyncWebServerRequest *request, int code, const String &body) {
@@ -103,14 +104,18 @@ void appendGlobalBrightness(JsonObject obj) {
   obj["displayOn"] = presetStore->displayOn();
 }
 
+void setJsonStringMember(JsonObject obj, const char *key, const char *value) {
+  obj[key].set(value != nullptr ? value : "");
+}
+
 void presetToJson(const SignPreset &preset, JsonObject obj, int index) {
   obj["contentType"] = contentTypeToString(preset.contentType);
   obj["effectId"] = effectIdToString(static_cast<EffectId>(preset.effectId));
   obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
   obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
-  obj["text"] = preset.text;
-  obj["label"] = preset.label;
+  setJsonStringMember(obj, "message", preset.message);
+  setJsonStringMember(obj, "slotLabel", preset.label);
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
   obj["effectParam"] = preset.effectParam;
@@ -194,8 +199,14 @@ bool jsonToPreset(JsonObject obj, SignPreset &preset) {
   } else if (obj["rowCount"].is<uint8_t>()) {
     preset.rowCount = obj["rowCount"];
   }
-  jsonAssignString(obj, "text", preset.text, sizeof(preset.text));
-  jsonAssignString(obj, "label", preset.label, sizeof(preset.label));
+  copyJsonStringValue(obj["text"], preset.message, sizeof(preset.message));
+  if (preset.message[0] == '\0') {
+    copyJsonStringValue(obj["message"], preset.message, sizeof(preset.message));
+  }
+  copyJsonStringValue(obj["label"], preset.label, sizeof(preset.label));
+  if (preset.label[0] == '\0') {
+    copyJsonStringValue(obj["slotLabel"], preset.label, sizeof(preset.label));
+  }
   if (obj["scroll"].is<bool>()) {
     preset.scroll = obj["scroll"];
   }
@@ -271,8 +282,8 @@ void appendPresetFields(JsonObject obj, const SignPreset &preset) {
   obj["effectLabel"] = effectLabel(static_cast<EffectId>(preset.effectId));
   obj["textHeightPx"] = preset.textHeightPx;
   obj["rowCount"] = preset.rowCount;
-  obj["text"] = preset.text;
-  obj["label"] = preset.label;
+  setJsonStringMember(obj, "message", preset.message);
+  setJsonStringMember(obj, "slotLabel", preset.label);
   obj["scroll"] = preset.scroll;
   obj["scrollDelayMs"] = preset.scrollDelayMs;
   obj["effectParam"] = preset.effectParam;
@@ -369,7 +380,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, body->c_str()) || doc.overflowed()) {
+              if (deserializeJson(doc, body->c_str(), body->length()) || doc.overflowed()) {
                 releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
@@ -397,7 +408,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, body->c_str()) || doc.overflowed()) {
+              if (deserializeJson(doc, body->c_str(), body->length()) || doc.overflowed()) {
                 releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;

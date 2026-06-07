@@ -403,7 +403,7 @@ DisplayEngine::TextLayout DisplayEngine::computeTextLayout(const SignPreset &pre
 
 int DisplayEngine::splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const {
   int count = 0;
-  const char *cursor = preset.text;
+  const char *cursor = preset.message;
 
   while (*cursor && count < maxLines) {
     const char *next = strchr(cursor, '\n');

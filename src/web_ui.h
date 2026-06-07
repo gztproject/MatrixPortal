@@ -466,7 +466,9 @@ function presetFormBody(){
     textHeightPx:blockHeightPx(),
     rowCount,
     text:messageTextValue(),
+    message:messageTextValue(),
     label:$("slotLabel").value.trim(),
+    slotLabel:$("slotLabel").value.trim(),
     scroll:$("scroll").checked,
     scrollDelayMs:parseInt($("delay").value,10)||40,
     color:selectedColor,
@@ -535,8 +537,10 @@ function savedPresetBody(p){
     effectId:normalizeEffectId(p.effectId||"bright_white"),
     textHeightPx:normalizedBlockHeight(p),
     rowCount:rows,
-    text:p.text||"",
-    label:p.label||"",
+    text:p.message||p.text||"",
+    message:p.message||p.text||"",
+    label:p.slotLabel||p.label||"",
+    slotLabel:p.slotLabel||p.label||"",
     scroll:!!p.scroll,
     scrollDelayMs:p.scrollDelayMs||40,
     color:(p.color||"#FFFFFF").toUpperCase(),
@@ -607,12 +611,12 @@ function slotLabel(p,slotIndex){
     if(draftLabel)return draftLabel.slice(0,12);
   }
   if(!p)return"empty";
-  if(p.label&&p.label.trim())return p.label.trim().slice(0,12);
+  if((p.slotLabel||p.label||"").trim())return (p.slotLabel||p.label||"").trim().slice(0,12);
   if(p.contentType==="effect")return(p.effectLabel||p.effectId||"Effect").slice(0,12);
   if(p.contentType==="clock")return"Clock";
   if(p.contentType==="countdown")return"Countdown";
   if(p.contentType==="gif"&&p.hasGif)return"GIF";
-  let t=(p.text||"").split("\n")[0].trim();
+  let t=(p.message||p.text||"").split("\n")[0].trim();
   if(slotIndex===selectedSlot){
     const draft=messageTextValue().split("\n")[0].trim();
     if(draft)t=draft;
@@ -622,8 +626,8 @@ function slotLabel(p,slotIndex){
 
 function fillForm(p){
   contentType=(p.contentType||"text").toLowerCase();
-  setMessageText(p.text);
-  $("slotLabel").value=p.label||"";
+  setMessageText(p.message||p.text);
+  $("slotLabel").value=p.slotLabel||p.label||"";
   rowCount=p.rowCount||1;
   selectedEffect=normalizeEffectId(p.effectId);
   if((p.countdownDurationSec||0)>0){

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.4 — 2026-06-07
+
+### Fixed
+
+- Preset message text and slot labels persist again: avoid broken ArduinoJson writes to `text`/`label` keys on ESP32, export `message`/`slotLabel`, and parse POST bodies with explicit length
+
 ## v0.2.3 — 2026-06-05
 
 ### Fixed

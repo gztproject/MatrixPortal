@@ -14,16 +14,22 @@ namespace {
 constexpr char kNs[] = "presets";
 constexpr uint8_t kDefaultBrightness = 10;
 
-void assignJsonString(JsonVariantConst value, char *dest, size_t destSize) {
-  if (value.isNull()) {
+void copyJsonStringValue(JsonVariantConst value, char *dest, size_t destSize) {
+  if (value.isNull() || destSize == 0) {
     return;
   }
   if (value.is<const char *>()) {
     strlcpy(dest, value.as<const char *>(), destSize);
     return;
   }
-  const String text = value.as<String>();
-  strlcpy(dest, text.c_str(), destSize);
+  const JsonString parsed = value.as<JsonString>();
+  if (!parsed.isNull()) {
+    strlcpy(dest, parsed.c_str(), destSize);
+  }
+}
+
+void setJsonStringMember(JsonObject obj, const char *key, const char *value) {
+  obj[key].set(value != nullptr ? value : "");
 }
 }  // namespace
 
@@ -123,8 +129,8 @@ void PresetStore::setDefaults(SignPreset &preset) const {
   preset.effectId = 0;
   preset.textHeightPx = TEXT_HEIGHT_PX_DEFAULT;
   preset.rowCount = 1;
-  strncpy(preset.text, "MatrixPortal", sizeof(preset.text) - 1);
-  preset.text[sizeof(preset.text) - 1] = '\0';
+  strncpy(preset.message, "MatrixPortal", sizeof(preset.message) - 1);
+  preset.message[sizeof(preset.message) - 1] = '\0';
   preset.label[0] = '\0';
   preset.scroll = true;
   preset.scrollDelayMs = 40;
@@ -167,8 +173,8 @@ void PresetStore::migrateLegacySign() {
 
   SignPreset preset;
   setDefaults(preset);
-  String text = legacy.getString("text", preset.text);
-  text.toCharArray(preset.text, sizeof(preset.text));
+  String text = legacy.getString("text", preset.message);
+  text.toCharArray(preset.message, sizeof(preset.message));
   preset.scroll = legacy.getBool("scroll", preset.scroll);
   preset.scrollDelayMs = legacy.getUShort("scrollMs", preset.scrollDelayMs);
   globalBrightness_ = clampBrightness(legacy.getUChar("bright", kDefaultBrightness));
@@ -243,8 +249,14 @@ void PresetStore::loadAll() {
 
     SignPreset preset;
     setDefaults(preset);
-    assignJsonString(doc["text"], preset.text, sizeof(preset.text));
-    assignJsonString(doc["label"], preset.label, sizeof(preset.label));
+    copyJsonStringValue(doc["message"], preset.message, sizeof(preset.message));
+    if (preset.message[0] == '\0') {
+      copyJsonStringValue(doc["text"], preset.message, sizeof(preset.message));
+    }
+    copyJsonStringValue(doc["slotLabel"], preset.label, sizeof(preset.label));
+    if (preset.label[0] == '\0') {
+      copyJsonStringValue(doc["label"], preset.label, sizeof(preset.label));
+    }
     preset.scroll = doc["scroll"] | preset.scroll;
     preset.scrollDelayMs = doc["scrollDelayMs"] | preset.scrollDelayMs;
     if (doc["brightness"].is<int>() && i == activeIndex_) {
@@ -316,8 +328,8 @@ void PresetStore::savePreset(int index) {
   doc["effectId"] = effectIdToString(static_cast<EffectId>(presets_[index].effectId));
   doc["textHeightPx"] = presets_[index].textHeightPx;
   doc["rowCount"] = presets_[index].rowCount;
-  doc["text"] = presets_[index].text;
-  doc["label"] = presets_[index].label;
+  setJsonStringMember(doc.to<JsonObject>(), "message", presets_[index].message);
+  setJsonStringMember(doc.to<JsonObject>(), "slotLabel", presets_[index].label);
   doc["scroll"] = presets_[index].scroll;
   doc["scrollDelayMs"] = presets_[index].scrollDelayMs;
   doc["colorR"] = presets_[index].colorR;
@@ -336,6 +348,9 @@ void PresetStore::savePreset(int index) {
 
   String json;
   serializeJson(doc, json);
+  if (json.isEmpty()) {
+    return;
+  }
 
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
