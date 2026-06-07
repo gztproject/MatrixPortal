@@ -425,7 +425,11 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 request->send(400, "application/json", "{\"error\":\"invalid preset\"}");
                 return;
               }
-              displayEngine->applyPreset(preset, id);
+              if (!displayEngine->applyPreset(preset, id)) {
+                releaseRequestBody(request);
+                request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
+                return;
+              }
               releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
@@ -461,7 +465,10 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 request->send(400, "application/json", "{\"error\":\"invalid config\"}");
                 return;
               }
-              displayEngine->applyPreset(preset, displayEngine->activeIndex());
+              if (!displayEngine->applyPreset(preset, displayEngine->activeIndex())) {
+                request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
+                return;
+              }
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
@@ -647,7 +654,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, body->c_str())) {
+              if (deserializeJson(doc, body->c_str(), body->length())) {
                 releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
@@ -695,7 +702,11 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                   }
                   SignPreset preset = presetStore->get(i);
                   jsonToPreset(item, preset);
-                  presetStore->set(i, preset);
+                  if (!presetStore->set(i, preset)) {
+                    releaseRequestBody(request);
+                    request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
+                    return;
+                  }
                   i++;
                 }
               }
@@ -748,7 +759,10 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
     if (preset.contentType == ContentType::Gif) {
       preset.contentType = ContentType::Text;
     }
-    displayEngine->applyPreset(preset, id);
+    if (!displayEngine->applyPreset(preset, id)) {
+      request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
+      return;
+    }
     request->send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -773,7 +787,10 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
         const String path = presetStore->gifPathForSlot(uploadPresetId);
         path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
         preset.contentType = ContentType::Gif;
-        displayEngine->applyPreset(preset, uploadPresetId);
+        if (!displayEngine->applyPreset(preset, uploadPresetId)) {
+          request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
+          return;
+        }
         request->send(200, "application/json", "{\"ok\":true}");
       },
       [](AsyncWebServerRequest *request, const String &filename, size_t index, uint8_t *data, size_t len,

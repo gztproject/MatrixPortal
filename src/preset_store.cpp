@@ -9,10 +9,28 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <cstring>
+#include <freertos/semphr.h>
 
 namespace {
 constexpr char kNs[] = "presets";
 constexpr uint8_t kDefaultBrightness = 10;
+constexpr size_t kPresetJsonMax = 1024;
+
+SemaphoreHandle_t storeMutex = nullptr;
+
+class StoreLock {
+ public:
+  StoreLock() {
+    if (storeMutex != nullptr) {
+      xSemaphoreTakeRecursive(storeMutex, portMAX_DELAY);
+    }
+  }
+  ~StoreLock() {
+    if (storeMutex != nullptr) {
+      xSemaphoreGiveRecursive(storeMutex);
+    }
+  }
+};
 
 void copyJsonStringValue(JsonVariantConst value, char *dest, size_t destSize) {
   if (value.isNull() || destSize == 0) {
@@ -30,6 +48,35 @@ void copyJsonStringValue(JsonVariantConst value, char *dest, size_t destSize) {
 
 void setJsonStringMember(JsonObject obj, const char *key, const char *value) {
   obj[key].set(value != nullptr ? value : "");
+}
+
+bool buildPresetJson(const SignPreset &preset, char *out, size_t outSize) {
+  JsonDocument doc;
+  JsonObject root = doc.to<JsonObject>();
+  setJsonStringMember(root, "contentType", contentTypeToString(preset.contentType));
+  setJsonStringMember(root, "effectId", effectIdToString(static_cast<EffectId>(preset.effectId)));
+  root["textHeightPx"] = preset.textHeightPx;
+  root["rowCount"] = preset.rowCount;
+  setJsonStringMember(root, "message", preset.message);
+  setJsonStringMember(root, "slotLabel", preset.label);
+  root["scroll"] = preset.scroll;
+  root["scrollDelayMs"] = preset.scrollDelayMs;
+  root["colorR"] = preset.colorR;
+  root["colorG"] = preset.colorG;
+  root["colorB"] = preset.colorB;
+  root["effectParam"] = preset.effectParam;
+  root["countdownEndUnix"] = preset.countdownEndUnix;
+  root["countdownDurationSec"] = preset.countdownDurationSec;
+  root["contentOffsetX"] = preset.contentOffsetX;
+  root["contentOffsetY"] = preset.contentOffsetY;
+  setJsonStringMember(root, "gifPath", preset.gifPath);
+
+  if (doc.overflowed()) {
+    return false;
+  }
+
+  const size_t n = serializeJson(doc, out, outSize);
+  return n > 0 && n < outSize;
 }
 }  // namespace
 
@@ -183,9 +230,10 @@ void PresetStore::migrateLegacySign() {
   preset.colorB = legacy.getUChar("colorB", preset.colorB);
   legacy.end();
 
-  presets_[0] = preset;
   activeIndex_ = 0;
-  savePreset(0);
+  if (!set(0, preset)) {
+    return;
+  }
   saveActiveIndex();
   saveGlobalBrightness();
 
@@ -197,6 +245,8 @@ void PresetStore::migrateLegacySign() {
 }
 
 void PresetStore::loadAll() {
+  StoreLock lock;
+
   for (int i = 0; i < PRESET_COUNT; i++) {
     setDefaults(presets_[i]);
     const String defaultPath = gifPathForSlot(i);
@@ -236,14 +286,16 @@ void PresetStore::loadAll() {
   }
 
   for (int i = 0; i < PRESET_COUNT; i++) {
-    const String key = String("p") + i;
-    const String json = prefs.getString(key.c_str(), "");
+    char key[4];
+    snprintf(key, sizeof(key), "p%d", i);
+    const String json = prefs.getString(key, "");
     if (json.isEmpty()) {
       continue;
     }
 
     JsonDocument doc;
     if (deserializeJson(doc, json) || doc.overflowed()) {
+      Serial.printf("preset %s: load failed (%u bytes)\n", key, json.length());
       continue;
     }
 
@@ -310,6 +362,7 @@ void PresetStore::loadAll() {
 }
 
 void PresetStore::saveGlobalBrightness() {
+  StoreLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -318,50 +371,36 @@ void PresetStore::saveGlobalBrightness() {
   prefs.end();
 }
 
-void PresetStore::savePreset(int index) {
+bool PresetStore::persistPreset(int index, const SignPreset &preset) {
   if (index < 0 || index >= PRESET_COUNT) {
-    return;
+    return false;
   }
 
-  JsonDocument doc;
-  doc["contentType"] = contentTypeToString(presets_[index].contentType);
-  doc["effectId"] = effectIdToString(static_cast<EffectId>(presets_[index].effectId));
-  doc["textHeightPx"] = presets_[index].textHeightPx;
-  doc["rowCount"] = presets_[index].rowCount;
-  setJsonStringMember(doc.to<JsonObject>(), "message", presets_[index].message);
-  setJsonStringMember(doc.to<JsonObject>(), "slotLabel", presets_[index].label);
-  doc["scroll"] = presets_[index].scroll;
-  doc["scrollDelayMs"] = presets_[index].scrollDelayMs;
-  doc["colorR"] = presets_[index].colorR;
-  doc["colorG"] = presets_[index].colorG;
-  doc["colorB"] = presets_[index].colorB;
-  doc["effectParam"] = presets_[index].effectParam;
-  doc["countdownEndUnix"] = presets_[index].countdownEndUnix;
-  doc["countdownDurationSec"] = presets_[index].countdownDurationSec;
-  doc["contentOffsetX"] = presets_[index].contentOffsetX;
-  doc["contentOffsetY"] = presets_[index].contentOffsetY;
-  doc["gifPath"] = presets_[index].gifPath;
-
-  if (doc.overflowed()) {
-    return;
+  char json[kPresetJsonMax];
+  if (!buildPresetJson(preset, json, sizeof(json))) {
+    Serial.printf("preset p%d: JSON build failed\n", index);
+    return false;
   }
 
-  String json;
-  serializeJson(doc, json);
-  if (json.isEmpty()) {
-    return;
-  }
+  char key[4];
+  snprintf(key, sizeof(key), "p%d", index);
 
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
-    return;
+    Serial.printf("preset p%d: NVS open failed\n", index);
+    return false;
   }
-  const String key = String("p") + index;
-  prefs.putString(key.c_str(), json);
+  const size_t written = prefs.putString(key, json);
   prefs.end();
+  if (written == 0) {
+    Serial.printf("preset p%d: NVS write failed\n", index);
+    return false;
+  }
+  return true;
 }
 
 void PresetStore::saveActiveIndex() {
+  StoreLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -371,6 +410,7 @@ void PresetStore::saveActiveIndex() {
 }
 
 void PresetStore::savePlaylist() {
+  StoreLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -382,6 +422,7 @@ void PresetStore::savePlaylist() {
 }
 
 void PresetStore::saveTimezoneId() {
+  StoreLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -391,6 +432,7 @@ void PresetStore::saveTimezoneId() {
 }
 
 void PresetStore::saveDisplayOn() {
+  StoreLock lock;
   Preferences prefs;
   if (!prefs.begin(kNs, false)) {
     return;
@@ -400,6 +442,7 @@ void PresetStore::saveDisplayOn() {
 }
 
 bool PresetStore::duplicateSlot(int fromIndex, int toIndex) {
+  StoreLock lock;
   if (fromIndex < 0 || fromIndex >= PRESET_COUNT || toIndex < 0 || toIndex >= PRESET_COUNT ||
       fromIndex == toIndex) {
     return false;
@@ -437,15 +480,19 @@ bool PresetStore::duplicateSlot(int fromIndex, int toIndex) {
     LittleFS.remove(toPath);
   }
 
-  savePreset(toIndex);
+  if (!persistPreset(toIndex, presets_[toIndex])) {
+    return false;
+  }
   return true;
 }
 
 PlaylistSettings PresetStore::playlist() const {
+  StoreLock lock;
   return playlist_;
 }
 
 void PresetStore::setPlaylist(const PlaylistSettings &settings, bool persist) {
+  StoreLock lock;
   playlist_.enabled = settings.enabled;
   playlist_.slotMask = settings.slotMask;
   playlist_.dwellMs = clampPlaylistDwellMs(settings.dwellMs);
@@ -455,10 +502,12 @@ void PresetStore::setPlaylist(const PlaylistSettings &settings, bool persist) {
 }
 
 const char *PresetStore::timezoneId() const {
+  StoreLock lock;
   return timezoneId_;
 }
 
 void PresetStore::setTimezoneId(const char *id, bool persist) {
+  StoreLock lock;
   strlcpy(timezoneId_, timeSyncNormalizeTimezoneId(id), sizeof(timezoneId_));
   timeSyncApplyTimezone(timezoneId_);
   if (persist) {
@@ -467,10 +516,12 @@ void PresetStore::setTimezoneId(const char *id, bool persist) {
 }
 
 bool PresetStore::displayOn() const {
+  StoreLock lock;
   return displayOn_;
 }
 
 void PresetStore::setDisplayOn(bool on, bool persist) {
+  StoreLock lock;
   displayOn_ = on;
   if (persist) {
     saveDisplayOn();
@@ -478,11 +529,16 @@ void PresetStore::setDisplayOn(bool on, bool persist) {
 }
 
 void PresetStore::begin() {
+  if (storeMutex == nullptr) {
+    storeMutex = xSemaphoreCreateRecursiveMutex();
+  }
+  StoreLock lock;
   loadAll();
   migrateLegacySign();
 }
 
 SignPreset PresetStore::get(int index) const {
+  StoreLock lock;
   if (index < 0 || index >= PRESET_COUNT) {
     SignPreset empty{};
     return empty;
@@ -490,19 +546,25 @@ SignPreset PresetStore::get(int index) const {
   return presets_[index];
 }
 
-void PresetStore::set(int index, const SignPreset &preset) {
+bool PresetStore::set(int index, const SignPreset &preset) {
+  StoreLock lock;
   if (index < 0 || index >= PRESET_COUNT) {
-    return;
+    return false;
+  }
+  if (!persistPreset(index, preset)) {
+    return false;
   }
   presets_[index] = preset;
-  savePreset(index);
+  return true;
 }
 
 int PresetStore::activeIndex() const {
+  StoreLock lock;
   return activeIndex_;
 }
 
 void PresetStore::setActiveIndex(int index, bool persist) {
+  StoreLock lock;
   if (index < 0 || index >= PRESET_COUNT) {
     return;
   }
@@ -513,10 +575,12 @@ void PresetStore::setActiveIndex(int index, bool persist) {
 }
 
 uint8_t PresetStore::globalBrightness() const {
+  StoreLock lock;
   return globalBrightness_;
 }
 
 void PresetStore::setGlobalBrightness(uint8_t value, bool persist) {
+  StoreLock lock;
   globalBrightness_ = clampBrightness(value);
   if (persist) {
     saveGlobalBrightness();

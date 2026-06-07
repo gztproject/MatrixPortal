@@ -55,7 +55,7 @@ class PresetStore {
  public:
   void begin();
   SignPreset get(int index) const;
-  void set(int index, const SignPreset &preset);
+  bool set(int index, const SignPreset &preset);
   int activeIndex() const;
   void setActiveIndex(int index, bool persist = true);
   String gifPathForSlot(int index) const;
@@ -72,7 +72,7 @@ class PresetStore {
 
  private:
   void loadAll();
-  void savePreset(int index);
+  bool persistPreset(int index, const SignPreset &preset);
   void saveActiveIndex();
   void saveGlobalBrightness();
   void savePlaylist();

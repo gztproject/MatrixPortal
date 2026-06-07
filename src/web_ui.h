@@ -811,8 +811,15 @@ function updateFirmwareUi(data){
 
 async function pollOtaStatus(){
   try{
+    const prevState=lastFirmwareUiData&&(lastFirmwareUiData.otaState||lastFirmwareUiData.state);
     const data=await apiJson("/api/firmware");
     updateFirmwareUi(data);
+    const state=data.otaState||data.state||"idle";
+    if((prevState==="downloading"||prevState==="flashing")&&state==="idle"&&busy){
+      setBusy(false);
+      showToast("Firmware updated");
+      await loadPresets({keepSelection:true,keepForm:false});
+    }
   }catch(e){}
 }
 

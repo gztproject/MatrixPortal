@@ -14,7 +14,7 @@ class DisplayEngine {
   int activeIndex() const;
   SignPreset activePreset() const;
   void selectPreset(int index);
-  void applyPreset(const SignPreset &preset, int index, bool persist = true);
+  bool applyPreset(const SignPreset &preset, int index, bool persist = true);
   void previewOnPanel(const SignPreset &preset, int gifSlotIndex);
   void setGlobalBrightness(uint8_t percent);
   void adjustGlobalBrightness(int delta);

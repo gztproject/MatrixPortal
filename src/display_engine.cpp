@@ -198,21 +198,24 @@ void DisplayEngine::selectPreset(int index) {
   applyActivePreset();
 }
 
-void DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persist) {
+bool DisplayEngine::applyPreset(const SignPreset &preset, int index, bool persist) {
   DisplayLock lock;
   if (!store_ || index < 0 || index >= PRESET_COUNT) {
-    return;
+    return false;
   }
 
   const SignPreset normalized = normalizePreset(preset);
 
   if (persist) {
-    store_->set(index, normalized);
+    if (!store_->set(index, normalized)) {
+      return false;
+    }
   }
   if (index == activeIndex()) {
     runtime_ = normalized;
     applyRuntimePreset(index);
   }
+  return true;
 }
 
 void DisplayEngine::previewOnPanel(const SignPreset &preset, int gifSlotIndex) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.6 — 2026-06-07
+
+### Fixed
+
+- Preset save now persists reliably: serialize all string fields with `.set()`, write to NVS via a fixed buffer, verify `putString`, and only update RAM after a successful write
+- Preset NVS access is mutex-protected so concurrent Web UI requests cannot corrupt saves
+- Save/restore API returns an error when NVS write fails instead of reporting success
+- Restore POST parses JSON with explicit body length
+
 ## v0.2.5 — 2026-06-07
 
 ### Added
