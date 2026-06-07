@@ -59,9 +59,23 @@ void releaseRequestBody(AsyncWebServerRequest *request) {
 }
 
 void jsonAssignString(JsonObject obj, const char *key, char *dest, size_t destSize) {
-  if (!obj[key].isNull()) {
-    strlcpy(dest, obj[key].as<const char *>(), destSize);
+  JsonVariantConst value = obj[key];
+  if (value.isNull()) {
+    return;
   }
+  if (value.is<const char *>()) {
+    strlcpy(dest, value.as<const char *>(), destSize);
+    return;
+  }
+  const String text = value.as<String>();
+  strlcpy(dest, text.c_str(), destSize);
+}
+
+void sendJsonResponse(AsyncWebServerRequest *request, int code, const String &body) {
+  AsyncWebServerResponse *response = request->beginResponse(code, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  response->addHeader("Pragma", "no-cache");
+  request->send(response);
 }
 
 uint32_t parseHexColor(const char *hex) {
@@ -239,10 +253,15 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
   appendFirmwareFields(root);
   appendWifiStatus(root);
 
+  if (doc.overflowed()) {
+    sendJsonResponse(request, 500, "{\"error\":\"json overflow\"}");
+    return;
+  }
+
   String body;
   body.reserve(4096);
   serializeJson(doc, body);
-  request->send(200, "application/json", body);
+  sendJsonResponse(request, 200, body);
 }
 
 void appendPresetFields(JsonObject obj, const SignPreset &preset) {
@@ -354,7 +373,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, body->c_str())) {
+              if (deserializeJson(doc, body->c_str()) || doc.overflowed()) {
                 releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
@@ -576,9 +595,13 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       JsonObject item = arr.add<JsonObject>();
       presetToJson(presetStore->get(i), item, i);
     }
+    if (doc.overflowed()) {
+      sendJsonResponse(request, 500, "{\"error\":\"json overflow\"}");
+      return;
+    }
     String body;
     serializeJson(doc, body);
-    request->send(200, "application/json", body);
+    sendJsonResponse(request, 200, body);
   });
 
   server.on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,

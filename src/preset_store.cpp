@@ -18,7 +18,12 @@ void assignJsonString(JsonVariantConst value, char *dest, size_t destSize) {
   if (value.isNull()) {
     return;
   }
-  strlcpy(dest, value.as<const char *>(), destSize);
+  if (value.is<const char *>()) {
+    strlcpy(dest, value.as<const char *>(), destSize);
+    return;
+  }
+  const String text = value.as<String>();
+  strlcpy(dest, text.c_str(), destSize);
 }
 }  // namespace
 
@@ -192,8 +197,11 @@ void PresetStore::loadAll() {
     defaultPath.toCharArray(presets_[i].gifPath, sizeof(presets_[i].gifPath));
   }
 
+  strlcpy(timezoneId_, timeSyncDefaultTimezoneId(), sizeof(timezoneId_));
+
   Preferences prefs;
   if (!prefs.begin(kNs, true)) {
+    timeSyncApplyTimezone(timezoneId_);
     return;
   }
 
@@ -211,12 +219,14 @@ void PresetStore::loadAll() {
   playlist_.enabled = prefs.getBool("plOn", false);
   playlist_.slotMask = prefs.getUChar("plMask", 0xFF);
   playlist_.dwellMs = clampPlaylistDwellMs(prefs.getUInt("plDwell", PLAYLIST_DWELL_MS_DEFAULT));
-  strlcpy(timezoneId_, timeSyncDefaultTimezoneId(), sizeof(timezoneId_));
   if (prefs.isKey("tzId")) {
     String tz = prefs.getString("tzId", timezoneId_);
     tz.toCharArray(timezoneId_, sizeof(timezoneId_));
   }
-  strlcpy(timezoneId_, timeSyncNormalizeTimezoneId(timezoneId_), sizeof(timezoneId_));
+  {
+    const char *normalized = timeSyncNormalizeTimezoneId(timezoneId_);
+    strlcpy(timezoneId_, normalized, sizeof(timezoneId_));
+  }
 
   for (int i = 0; i < PRESET_COUNT; i++) {
     const String key = String("p") + i;
@@ -226,7 +236,7 @@ void PresetStore::loadAll() {
     }
 
     JsonDocument doc;
-    if (deserializeJson(doc, json)) {
+    if (deserializeJson(doc, json) || doc.overflowed()) {
       continue;
     }
 
@@ -318,6 +328,10 @@ void PresetStore::savePreset(int index) {
   doc["contentOffsetX"] = presets_[index].contentOffsetX;
   doc["contentOffsetY"] = presets_[index].contentOffsetY;
   doc["gifPath"] = presets_[index].gifPath;
+
+  if (doc.overflowed()) {
+    return;
+  }
 
   String json;
   serializeJson(doc, json);

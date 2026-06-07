@@ -2,6 +2,8 @@
 
 #include "wifi_manager.h"
 
+#include <Arduino.h>
+#include <cstring>
 #include <sys/time.h>
 #include <time.h>
 
@@ -30,6 +32,7 @@ unsigned long lastSyncAttemptMs = 0;
 unsigned long lastSyncSuccessMs = 0;
 unsigned long ntpWaitStartMs = 0;
 bool ntpWaiting = false;
+char activePosixTz[48] = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 const TimezoneOption *findTimezone(const char *timezoneId) {
   if (!timezoneId || timezoneId[0] == '\0') {
@@ -47,7 +50,8 @@ void applyPosixTimezone(const char *posixTz) {
   if (!posixTz || posixTz[0] == '\0') {
     return;
   }
-  setenv("TZ", posixTz, 1);
+  strlcpy(activePosixTz, posixTz, sizeof(activePosixTz));
+  setenv("TZ", activePosixTz, 1);
   tzset();
 }
 
@@ -117,7 +121,8 @@ void timeSyncTick() {
   }
 
   lastSyncAttemptMs = now;
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  // configTime() overwrites TZ with UTC; keep the NVS-selected POSIX zone for NTP.
+  configTzTime(activePosixTz, "pool.ntp.org", "time.nist.gov", nullptr);
   ntpWaitStartMs = now;
   ntpWaiting = true;
   tryAcceptNtpTime(now);

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.3 — 2026-06-05
+
+### Fixed
+
+- Preset text/labels in Web UI and backup JSON: disable browser caching on preset API responses, detect JSON overflow on load/export, and improve string parsing
+- Timezone survives reboot and NTP sync: use `configTzTime()` so SNTP no longer overwrites the saved TZ with UTC
+
 ## v0.2.2 — 2026-06-05
 
 ### Fixed

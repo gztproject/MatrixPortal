@@ -310,6 +310,7 @@ let previewTimer=null;
 let firmwareVersion="";
 let otaPollTimer=null;
 let selectedFirmwareFile=null;
+let lastFirmwareUiData=null;
 const PANEL_W=104;
 const PANEL_H=52;
 const $=id=>document.getElementById(id);
@@ -411,10 +412,12 @@ function setBusy(v){
   $("saveSlot").disabled=v;
   $("showSlot").disabled=v;
   if($("tryOnPanel"))$("tryOnPanel").disabled=v;
+  if(!v&&lastFirmwareUiData)updateFirmwareUi(lastFirmwareUiData);
 }
 
 async function apiJson(url,opts={}){
   opts.credentials=opts.credentials||"include";
+  opts.cache=opts.cache||"no-store";
   const r=await fetch(url,opts);
   let data={};
   try{data=await r.json();}catch(e){}
@@ -769,6 +772,7 @@ function updateConnBar(c){
 
 function updateFirmwareUi(data){
   if(!data)return;
+  lastFirmwareUiData=data;
   if(data.firmwareVersion||data.version){
     firmwareVersion=data.firmwareVersion||data.version;
     $("fwVersion").textContent=firmwareVersion;
@@ -1156,7 +1160,7 @@ async function duplicateSlot(){
 async function downloadBackup(){
   setBusy(true);
   try{
-    const r=await fetch("/api/backup",{credentials:"include"});
+    const r=await fetch("/api/backup",{credentials:"include",cache:"no-store"});
     if(!r.ok)throw new Error(`Request failed (${r.status})`);
     const blob=await r.blob();
     const a=document.createElement("a");
