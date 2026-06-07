@@ -734,15 +734,8 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
     AUTH(request);
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
-    if (!otaUpdateCheckRemote()) {
-      root["ok"] = false;
-      appendOtaStatusJson(root);
-      String body;
-      serializeJson(doc, body);
-      request->send(400, "application/json", body);
-      return;
-    }
-    root["ok"] = true;
+    const bool checked = otaUpdateCheckRemote();
+    root["ok"] = checked;
     appendOtaStatusJson(root);
     String body;
     serializeJson(doc, body);

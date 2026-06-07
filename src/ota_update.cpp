@@ -69,24 +69,53 @@ void clearError() {
   status.lastError[0] = '\0';
 }
 
+void setHttpError(const char *context, int httpCode) {
+  if (httpCode > 0) {
+    snprintf(status.lastError, sizeof(status.lastError), "%s (HTTP %d)", context, httpCode);
+  } else {
+    strlcpy(status.lastError, context, sizeof(status.lastError));
+  }
+  status.state = OtaState::Error;
+  status.progress = 0;
+}
+
 bool beginHttpClient(HTTPClient &http, const String &url, WiFiClient *plainClient,
                      WiFiClientSecure *secureClient) {
   if (url.startsWith("https://")) {
     secureClient->setInsecure();
-    return http.begin(*secureClient, url);
+    if (!http.begin(*secureClient, url)) {
+      return false;
+    }
+  } else if (!http.begin(*plainClient, url)) {
+    return false;
   }
-  return http.begin(*plainClient, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(15000);
+  http.setUserAgent("MatrixSign/" FIRMWARE_VERSION);
+  return true;
 }
 
-bool fetchVersionManifest(const char *baseUrl, char *remoteVersion, size_t versionLen,
-                          char *binUrlOut, size_t binUrlLen) {
+struct ManifestFetchWork {
+  char baseUrl[kOtaUrlMax + 1]{};
+  char remoteVersion[16]{};
+  char binUrl[kRemoteBinUrlMax + 1]{};
+  char error[64]{};
+  bool ok = false;
+  SemaphoreHandle_t done = nullptr;
+};
+
+bool fetchVersionManifestWork(ManifestFetchWork *work) {
+  if (!work) {
+    return false;
+  }
+
   if (!wifiStaConnected()) {
-    setError("home Wi-Fi required");
+    strlcpy(work->error, "home Wi-Fi required", sizeof(work->error));
     return false;
   }
 
   char base[kOtaUrlMax + 2]{};
-  strlcpy(base, baseUrl, sizeof(base));
+  strlcpy(base, work->baseUrl, sizeof(base));
   normalizeBaseUrl(base, sizeof(base));
 
   String manifestUrl = String(base) + "version.json";
@@ -94,14 +123,18 @@ bool fetchVersionManifest(const char *baseUrl, char *remoteVersion, size_t versi
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
   if (!beginHttpClient(http, manifestUrl, &plainClient, &secureClient)) {
-    setError("manifest URL invalid");
+    strlcpy(work->error, "manifest URL invalid", sizeof(work->error));
     return false;
   }
 
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    setError("manifest fetch failed");
+    if (code > 0) {
+      snprintf(work->error, sizeof(work->error), "manifest fetch failed (HTTP %d)", code);
+    } else {
+      strlcpy(work->error, "manifest fetch failed", sizeof(work->error));
+    }
     return false;
   }
 
@@ -109,24 +142,66 @@ bool fetchVersionManifest(const char *baseUrl, char *remoteVersion, size_t versi
   const String payload = http.getString();
   http.end();
   if (deserializeJson(doc, payload)) {
-    setError("invalid manifest JSON");
+    strlcpy(work->error, "invalid manifest JSON", sizeof(work->error));
     return false;
   }
 
   const char *version = doc["version"] | "";
   if (version[0] == '\0') {
-    setError("manifest missing version");
+    strlcpy(work->error, "manifest missing version", sizeof(work->error));
     return false;
   }
-  strlcpy(remoteVersion, version, versionLen);
+  strlcpy(work->remoteVersion, version, sizeof(work->remoteVersion));
 
   if (doc["url"].is<const char *>()) {
-    strlcpy(binUrlOut, doc["url"].as<const char *>(), binUrlLen);
+    strlcpy(work->binUrl, doc["url"].as<const char *>(), sizeof(work->binUrl));
   } else {
     const char *binName = doc["bin"] | "firmware.bin";
     String built = String(base) + binName;
-    strlcpy(binUrlOut, built.c_str(), binUrlLen);
+    strlcpy(work->binUrl, built.c_str(), sizeof(work->binUrl));
   }
+  return true;
+}
+
+void manifestFetchTask(void *param) {
+  ManifestFetchWork *work = static_cast<ManifestFetchWork *>(param);
+  work->ok = fetchVersionManifestWork(work);
+  if (work->done != nullptr) {
+    xSemaphoreGive(work->done);
+  }
+  vTaskDelete(nullptr);
+}
+
+bool fetchVersionManifest(const char *baseUrl, char *remoteVersion, size_t versionLen,
+                          char *binUrlOut, size_t binUrlLen) {
+  ManifestFetchWork work{};
+  strlcpy(work.baseUrl, baseUrl, sizeof(work.baseUrl));
+  work.done = xSemaphoreCreateBinary();
+  if (work.done == nullptr) {
+    setError("out of memory");
+    return false;
+  }
+
+  if (xTaskCreate(manifestFetchTask, "ota_check", 8192, &work, 1, nullptr) != pdPASS) {
+    vSemaphoreDelete(work.done);
+    setError("check task failed");
+    return false;
+  }
+
+  if (xSemaphoreTake(work.done, pdMS_TO_TICKS(20000)) != pdTRUE) {
+    vSemaphoreDelete(work.done);
+    setError("manifest fetch timeout");
+    return false;
+  }
+  vSemaphoreDelete(work.done);
+
+  if (!work.ok) {
+    setError(work.error[0] != '\0' ? work.error : "manifest fetch failed");
+    return false;
+  }
+
+  strlcpy(remoteVersion, work.remoteVersion, versionLen);
+  strlcpy(binUrlOut, work.binUrl, binUrlLen);
   return true;
 }
 
@@ -196,7 +271,7 @@ void upgradeTask(void *param) {
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    setError("download failed");
+    setHttpError("download failed", code);
     free(url);
     upgradeTaskHandle = nullptr;
     vTaskDelete(nullptr);
@@ -306,6 +381,7 @@ bool otaUpdateCheckRemote() {
   strlcpy(status.remoteBinUrl, binUrl, sizeof(status.remoteBinUrl));
   status.updateAvailable = compareVersions(remoteVersion, FIRMWARE_VERSION) > 0;
   status.state = OtaState::Idle;
+  clearError();
   return true;
 }
 

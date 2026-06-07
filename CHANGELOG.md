@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1 — 2026-06-05
+
+### Fixed
+
+- OTA update check: follow GitHub redirects, fetch manifest off async web thread, clearer HTTP errors
+- **Check for updates** returns success when already on latest (no HTTP 400)
+
 ## v0.2.0 — 2026-06-05
 
 ### Added

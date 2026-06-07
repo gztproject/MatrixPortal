@@ -779,7 +779,7 @@ function updateFirmwareUi(data){
     msg=avail?`Update available: v${remote}`:`Remote v${remote} · up to date (v${firmwareVersion})`;
   }
   $("otaStatus").textContent=msg;
-  $("upgradeFirmware").disabled=busy||!(avail||remote)||state==="downloading"||state==="flashing";
+  $("upgradeFirmware").disabled=busy||!avail||state==="downloading"||state==="flashing";
   if(state==="downloading"||state==="flashing"){
     if(!otaPollTimer)otaPollTimer=setInterval(pollOtaStatus,1000);
   }else if(otaPollTimer){
@@ -807,14 +807,19 @@ async function saveOtaUrl(){
 async function checkFirmwareUpdate(){
   setBusy(true);
   try{
-    const data=await apiJson("/api/firmware/check",{method:"POST"});
+    const r=await fetch("/api/firmware/check",{method:"POST",credentials:"include"});
+    let data={};
+    try{data=await r.json();}catch(e){}
+    if(r.status===401){
+      throw new Error("Login required — default admin/admin, or use Security to set a new password");
+    }
     updateFirmwareUi(data);
-    showToast(data.updateAvailable?"Update available":"Firmware up to date");
+    if(data.ok){
+      showToast(data.updateAvailable?"Update available":"Firmware up to date");
+    }else{
+      showToast(data.error||data.otaError||"Check failed",true);
+    }
   }catch(e){
-    try{
-      const data=await apiJson("/api/firmware");
-      updateFirmwareUi(data);
-    }catch(_e){}
     showToast(e.message,true);
   }
   setBusy(false);
