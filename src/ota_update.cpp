@@ -92,6 +92,8 @@ bool beginHttpClient(HTTPClient &http, const String &url, WiFiClient *plainClien
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(15000);
   http.setUserAgent("MatrixSign/" FIRMWARE_VERSION);
+  http.addHeader("Cache-Control", "no-cache");
+  http.addHeader("Pragma", "no-cache");
   return true;
 }
 
@@ -118,7 +120,7 @@ bool fetchVersionManifestWork(ManifestFetchWork *work) {
   strlcpy(base, work->baseUrl, sizeof(base));
   normalizeBaseUrl(base, sizeof(base));
 
-  String manifestUrl = String(base) + "version.json";
+  String manifestUrl = String(base) + "version.json?nc=" + String(millis());
   HTTPClient http;
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
@@ -153,10 +155,13 @@ bool fetchVersionManifestWork(ManifestFetchWork *work) {
   }
   strlcpy(work->remoteVersion, version, sizeof(work->remoteVersion));
 
-  if (doc["url"].is<const char *>()) {
+  if (!doc["url"].isNull()) {
     strlcpy(work->binUrl, doc["url"].as<const char *>(), sizeof(work->binUrl));
   } else {
-    const char *binName = doc["bin"] | "firmware.bin";
+    const char *binName = doc["bin"].isNull() ? "firmware.bin" : doc["bin"].as<const char *>();
+    if (!binName || binName[0] == '\0') {
+      binName = "firmware.bin";
+    }
     String built = String(base) + binName;
     strlcpy(work->binUrl, built.c_str(), sizeof(work->binUrl));
   }

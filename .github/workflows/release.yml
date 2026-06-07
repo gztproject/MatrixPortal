@@ -32,7 +32,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cp .pio/build/adafruit_matrixportal_esp32s3/firmware.bin firmware.bin
-          printf '{"version":"%s","bin":"firmware.bin"}\n' "$VERSION" > version.json
+          printf '{"version":"%s","bin":"firmware.bin","url":"https://github.com/%s/releases/download/v%s/firmware.bin"}\n' \
+            "$VERSION" "$GITHUB_REPOSITORY" "$VERSION" > version.json
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
