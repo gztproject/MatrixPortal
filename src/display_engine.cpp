@@ -282,6 +282,7 @@ void DisplayEngine::applyRuntimePreset(int gifSlotIndex) {
   if (activeContentType_ == ContentType::Effect) {
     effectRendererApply(static_cast<EffectId>(runtime_.effectId), runtime_.colorR, runtime_.colorG,
                         runtime_.colorB, runtime_.effectParam);
+    finishFrame();
     return;
   }
 
@@ -320,6 +321,12 @@ void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   dma_->setBrightness8(level);
 }
 
+void DisplayEngine::finishFrame() {
+  if (dma_) {
+    dma_->flipDMABuffer();
+  }
+}
+
 void DisplayEngine::showDisplayOffIndicator() {
   if (!panel_ || !dma_) {
     return;
@@ -329,6 +336,7 @@ void DisplayEngine::showDisplayOffIndicator() {
   panel_->fillScreen(0);
   panel_->drawPixel(0, 0, panel_->color565(255, 0, 0));
   dirty_ = false;
+  finishFrame();
 }
 
 void DisplayEngine::applyDisplayPowerState() {
@@ -452,14 +460,13 @@ void DisplayEngine::redrawTextBlock() {
     const int y = textLayout_.rowY[i] + runtime_.contentOffsetY;
     drawTextLine(panel_, x, y, textLayout_.textSize, color, textLines_[i]);
   }
+  finishFrame();
 }
 
 void DisplayEngine::redrawTimeBlock() {
   if (!panel_) {
     return;
   }
-
-  panel_->fillScreen(0);
 
   if (activeContentType_ == ContentType::Clock) {
     const bool showSeconds = clockShowSeconds(runtime_.effectParam);
@@ -477,6 +484,26 @@ void DisplayEngine::redrawTimeBlock() {
     int dateY = 0;
     layoutClockLines(timeLine_, dateLine_, showDate, timeSize, dateSize, timeY, dateY);
 
+    int clearTop = timeY - kTextCaronBandRows * timeSize;
+    int clearBottom = timeY + kTextBodyBandRows * timeSize;
+    if (showDate) {
+      const int dateTop = dateY - kTextCaronBandRows * dateSize;
+      const int dateBottom = dateY + kTextBodyBandRows * dateSize;
+      if (dateTop < clearTop) {
+        clearTop = dateTop;
+      }
+      if (dateBottom > clearBottom) {
+        clearBottom = dateBottom;
+      }
+    }
+    if (clearTop < 0) {
+      clearTop = 0;
+    }
+    if (clearBottom > PANEL_RES_Y) {
+      clearBottom = PANEL_RES_Y;
+    }
+    panel_->fillRect(0, clearTop, PANEL_RES_X, clearBottom - clearTop, 0);
+
     const uint16_t color = textColor565(runtime_);
     const int timeX = (PANEL_RES_X - textLinePixelWidth(timeLine_, timeSize)) / 2;
     drawTextLine(panel_, timeX, timeY, timeSize, color, timeLine_);
@@ -484,8 +511,11 @@ void DisplayEngine::redrawTimeBlock() {
       const int dateX = (PANEL_RES_X - textLinePixelWidth(dateLine_, dateSize)) / 2;
       drawTextLine(panel_, dateX, dateY, dateSize, color, dateLine_);
     }
+    finishFrame();
     return;
-  } else if (runtime_.countdownDurationSec > 0) {
+  }
+
+  if (runtime_.countdownDurationSec > 0) {
     const unsigned long elapsedMs = millis() - countdownStartedMs_;
     const long remaining =
         static_cast<long>(runtime_.countdownDurationSec) - static_cast<long>(elapsedMs / 1000);
@@ -498,7 +528,12 @@ void DisplayEngine::redrawTimeBlock() {
   const int width = textLinePixelWidth(timeLine_, textSize);
   const int x = (PANEL_RES_X - width) / 2;
   const int y = (PANEL_RES_Y - kTextBodyBandRows * textSize) / 2;
+  const int clearTop = y - kTextCaronBandRows * textSize;
+  const int clearHeight = kTextCaronBandRows * textSize + kTextBodyBandRows * textSize;
+  panel_->fillRect(0, clearTop < 0 ? 0 : clearTop, PANEL_RES_X,
+                   clearTop < 0 ? clearHeight + clearTop : clearHeight, 0);
   drawTextLine(panel_, x, y, textSize, textColor565(runtime_), timeLine_);
+  finishFrame();
 }
 
 void DisplayEngine::redrawOtaScreen(uint8_t progressPercent) {
@@ -535,6 +570,7 @@ void DisplayEngine::redrawOtaScreen(uint8_t progressPercent) {
   drawTextLine(panel_, titleX, top, titleSize, color, kTitle);
   drawTextLine(panel_, progressX, top + kTextBodyBandRows * titleSize + gap, progressSize, color,
                progressLine);
+  finishFrame();
 }
 
 void DisplayEngine::tickTime(const SignPreset &preset) {
@@ -542,7 +578,20 @@ void DisplayEngine::tickTime(const SignPreset &preset) {
   const unsigned long now = millis();
   if (now - lastScrollMs_ >= 1000) {
     lastScrollMs_ = now;
-    dirty_ = true;
+    if (activeContentType_ == ContentType::Clock) {
+      char newTime[32];
+      char newDate[16] = "";
+      const bool showSeconds = clockShowSeconds(runtime_.effectParam);
+      formatClockTime(newTime, sizeof(newTime), showSeconds);
+      if (clockShowDate(runtime_.effectParam)) {
+        formatClockDate(newDate, sizeof(newDate));
+      }
+      if (strcmp(newTime, timeLine_) != 0 || strcmp(newDate, dateLine_) != 0) {
+        dirty_ = true;
+      }
+    } else {
+      dirty_ = true;
+    }
   }
   if (dirty_) {
     redrawTimeBlock();
@@ -631,11 +680,15 @@ void DisplayEngine::tickText(const SignPreset &preset) {
 
 void DisplayEngine::tickGif(const SignPreset &preset) {
   (void)preset;
-  gifPlayerTick();
+  if (gifPlayerTick()) {
+    finishFrame();
+  }
 }
 
 void DisplayEngine::tickEffect(const SignPreset &preset) {
-  effectRendererTick(static_cast<EffectId>(preset.effectId));
+  if (effectRendererTick(static_cast<EffectId>(preset.effectId))) {
+    finishFrame();
+  }
 }
 
 void DisplayEngine::tick() {

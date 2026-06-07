@@ -40,6 +40,7 @@ class DisplayEngine {
   void applyBrightness(uint8_t brightnessPercent);
   void showDisplayOffIndicator();
   void applyDisplayPowerState();
+  void finishFrame();
   TextLayout computeTextLayout(const SignPreset &preset, char lines[][201], int lineCount) const;
   int splitTextLines(const SignPreset &preset, char lines[][201], int maxLines) const;
   int textBlockPixelWidth(const SignPreset &preset, const TextLayout &layout,

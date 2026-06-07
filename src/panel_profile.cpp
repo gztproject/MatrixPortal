@@ -87,6 +87,7 @@ bool panelProfileBegin() {
   mxconfig.min_refresh_rate = PANEL_REFRESH_HZ;
   mxconfig.setPixelColorDepthBits(PANEL_COLOR_DEPTH);
   mxconfig.latch_blanking = 1;
+  mxconfig.double_buff = true;
 
   dma_display = new MatrixPanel_I2S_DMA(mxconfig);
   if (!dma_display->begin()) {
