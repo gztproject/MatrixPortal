@@ -90,10 +90,13 @@ void appendWifiStatus(JsonObject obj) {
   obj["apSsid"] = wifiApSsid();
   obj["apIp"] = wifiApIp();
   obj["staConnected"] = wifiStaConnected();
+  obj["staSaved"] = wifiManagerHasSavedSta();
   if (wifiStaConnected()) {
+    obj["staSsid"] = wifiStaSsid();
     obj["staIp"] = wifiStaIp();
     obj["staRssi"] = wifiStaRssi();
   } else {
+    obj["staSsid"] = "";
     obj["staIp"] = "";
     obj["staRssi"] = nullptr;
   }
@@ -300,6 +303,17 @@ void appendPresetFields(JsonObject obj, const SignPreset &preset) {
 void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   displayEngine = &engine;
   presetStore = &store;
+
+  const auto redirectCaptivePortal = [](AsyncWebServerRequest *request) {
+    request->redirect("http://192.168.4.1/", 302);
+  };
+  server.on("/generate_204", HTTP_GET, redirectCaptivePortal);
+  server.on("/gen_204", HTTP_GET, redirectCaptivePortal);
+  server.on("/hotspot-detect.html", HTTP_GET, redirectCaptivePortal);
+  server.on("/library/test/success.html", HTTP_GET, redirectCaptivePortal);
+  server.on("/connecttest.txt", HTTP_GET, redirectCaptivePortal);
+  server.on("/ncsi.txt", HTTP_GET, redirectCaptivePortal);
+  server.on("/canonical.html", HTTP_GET, redirectCaptivePortal);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     AUTH(request);

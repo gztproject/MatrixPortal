@@ -262,11 +262,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 <details>
 <summary>Home Wi-Fi (optional)</summary>
+<p class="hint">Tried once at boot. Open <strong>http://192.168.4.1</strong> (not https). Login: admin / admin. On Android, turn off Private DNS and mobile data if the page won’t load.</p>
 <label for="ssid">SSID</label>
 <input type="text" id="ssid" autocomplete="off">
 <label for="password">Password</label>
 <input type="password" id="password" autocomplete="off">
-<button class="btn-secondary" id="connectWifi">Connect in background</button>
+<button class="btn-secondary" id="connectWifi">Connect</button>
 <button class="btn-danger" id="wifiReset">Forget home Wi-Fi</button>
 </details>
 
@@ -784,7 +785,8 @@ function updateTimeStatus(data){
 
 function updateBanner(c){
   if(c.staConnected){
-    $("banner").innerHTML=`<strong>Connected</strong> · ${c.staIp||""}${c.staRssi!=null?` · ${c.staRssi} dBm`:""} · open <strong>http://${c.staIp||""}/</strong>`;
+    const name=c.staSsid?` (${c.staSsid})`:"";
+    $("banner").innerHTML=`<strong>Connected</strong>${name} · ${c.staIp||""}${c.staRssi!=null?` · ${c.staRssi} dBm`:""} · open <strong>http://${c.staIp||""}/</strong>`;
     return;
   }
   $("banner").innerHTML=`<strong>Field mode:</strong> join Wi-Fi <strong>${c.apSsid||"MatrixSign"}</strong> (password set at build time — see README), then open <strong>http://${c.apIp||"192.168.4.1"}</strong>. Web UI login: <strong>admin</strong> / <strong>admin</strong>.`;
@@ -795,8 +797,10 @@ function updateConnBar(c){
   let s="";
   const ver=firmwareVersion||c.firmwareVersion||"";
   const power=displayOn?`brightness ${globalBrightness}%`:"display off";
-  if(c.staConnected)s=`Home ${c.staIp} · ${c.staRssi} dBm · v${ver||"?"} · ${power}`;
-  else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · v${ver||"?"} · ${power}`;
+  if(c.staConnected){
+    const name=c.staSsid||"Home";
+    s=`${name} ${c.staIp} · ${c.staRssi} dBm · v${ver||"?"} · ${power}`;
+  }else s=`AP ${c.apSsid||"MatrixSign"} · ${c.apIp||"192.168.4.1"} · v${ver||"?"} · ${power}`;
   $("connBar").textContent=s;
 }
 
@@ -1385,12 +1389,16 @@ $("firmwareFile").addEventListener("change",e=>{
 });
 $("uploadFirmware").addEventListener("click",()=>uploadFirmwareFile(selectedFirmwareFile));
 $("connectWifi").addEventListener("click",async()=>{
+  const ssid=$("ssid").value.trim();
+  const password=$("password").value;
+  if(!ssid){showToast("SSID required",true);return;}
   setBusy(true);
   try{
-    await apiJson("/api/wifi/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ssid:$("ssid").value,password:$("password").value})});
-    showToast("Connecting to home Wi-Fi...");
-    setTimeout(()=>loadPresets({keepSelection:true,keepForm:true}),2000);
-  }catch(e){showToast(e.message,true);}
+    await apiJson("/api/wifi/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ssid,password})});
+    showToast("Rebooting to connect…");
+  }catch(e){
+    showToast(e.message.includes("Failed to fetch")?"Rebooting to connect…":e.message,e.message.includes("Failed to fetch")?false:true);
+  }
   setBusy(false);
 });
 
