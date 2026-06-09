@@ -1,6 +1,9 @@
 #include "web_server.h"
 
+#include "limits_config.h"
 #include "effect_renderer.h"
+#include "gif_player.h"
+#include <esp_system.h>
 #include "web_ui.h"
 #include "wifi_manager.h"
 #include "time_sync.h"
@@ -34,8 +37,24 @@ size_t uploadTotalBytes = 0;
       return;                     \
   } while (0)
 
+void releaseRequestBody(AsyncWebServerRequest *request);
+bool jsonToPreset(JsonObject obj, SignPreset &preset);
+
+bool rejectOversizedBody(AsyncWebServerRequest *request, size_t total, size_t maxBytes) {
+  if (total > maxBytes) {
+    Serial.printf("http: 413 body %u (max %u)\n", static_cast<unsigned>(total),
+                  static_cast<unsigned>(maxBytes));
+    request->send(413, "application/json", "{\"error\":\"request body too large\"}");
+    return true;
+  }
+  return false;
+}
+
 String *accumulateRequestBody(AsyncWebServerRequest *request, uint8_t *data, size_t len,
-                              size_t index, size_t total) {
+                              size_t index, size_t total, size_t maxBytes) {
+  if (index == 0 && rejectOversizedBody(request, total, maxBytes)) {
+    return nullptr;
+  }
   if (index == 0) {
     request->_tempObject = new String();
     static_cast<String *>(request->_tempObject)->reserve(total + 1);
@@ -45,10 +64,238 @@ String *accumulateRequestBody(AsyncWebServerRequest *request, uint8_t *data, siz
     return nullptr;
   }
   body->concat(reinterpret_cast<const char *>(data), len);
+  if (body->length() > maxBytes) {
+    releaseRequestBody(request);
+    rejectOversizedBody(request, body->length(), maxBytes);
+    return nullptr;
+  }
   if (index + len < total) {
     return nullptr;
   }
   return body;
+}
+
+void resetGifUploadState() {
+  if (uploadFile) {
+    uploadFile.close();
+  }
+  uploadPresetId = -1;
+  uploadTotalBytes = 0;
+}
+
+const char *espResetReasonString() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      return "poweron";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SW:
+      return "sw";
+    case ESP_RST_EXT:
+      return "ext";
+    case ESP_RST_PANIC:
+      return "panic";
+    default:
+      return "other";
+  }
+}
+
+bool parsePlaylistUpdate(JsonObject doc, PlaylistSettings current, PlaylistSettings &out,
+                         const char **errorOut) {
+  out = current;
+  if (doc["dwellMs"].is<int>()) {
+    const int dwell = doc["dwellMs"].as<int>();
+    if (dwell == 0) {
+      out.enabled = false;
+    } else {
+      out.dwellMs = clampPlaylistDwellMs(dwell);
+    }
+  }
+  if (doc["enabled"].is<bool>()) {
+    out.enabled = doc["enabled"].as<bool>();
+  }
+  if (doc["slotMask"].is<int>()) {
+    out.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
+  }
+  if (out.enabled && out.slotMask == 0) {
+    if (errorOut) {
+      *errorOut = "playlist needs at least one slot";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool validateRestoreDoc(JsonObject doc, const char **errorOut) {
+  if (doc["brightness"].is<int>()) {
+    const int b = doc["brightness"].as<int>();
+    if (b < 1 || b > 100) {
+      if (errorOut) {
+        *errorOut = "invalid brightness";
+      }
+      Serial.println("restore: reject brightness");
+      return false;
+    }
+  }
+  if (doc["activeIndex"].is<int>()) {
+    const int idx = doc["activeIndex"].as<int>();
+    if (idx < 0 || idx >= PRESET_COUNT) {
+      if (errorOut) {
+        *errorOut = "invalid activeIndex";
+      }
+      Serial.println("restore: reject activeIndex");
+      return false;
+    }
+  }
+  const bool playlistTouched = doc["playlistEnabled"].is<bool>() || doc["slotMask"].is<int>() ||
+                               doc["playlistMask"].is<int>() || doc["dwellMs"].is<int>() ||
+                               doc["playlistDwellMs"].is<int>();
+  if (playlistTouched) {
+    PlaylistSettings pl = presetStore->playlist();
+    if (doc["playlistEnabled"].is<bool>()) {
+      pl.enabled = doc["playlistEnabled"].as<bool>();
+    }
+    if (doc["slotMask"].is<int>()) {
+      pl.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
+    } else if (doc["playlistMask"].is<int>()) {
+      pl.slotMask = static_cast<uint8_t>(doc["playlistMask"].as<int>() & 0xFF);
+    }
+    int dwell = -1;
+    if (doc["dwellMs"].is<int>()) {
+      dwell = doc["dwellMs"].as<int>();
+    } else if (doc["playlistDwellMs"].is<int>()) {
+      dwell = doc["playlistDwellMs"].as<int>();
+    }
+    if (dwell == 0) {
+      pl.enabled = false;
+    } else if (dwell > 0) {
+      if (dwell < static_cast<int>(PLAYLIST_DWELL_MS_MIN) ||
+          dwell > static_cast<int>(PLAYLIST_DWELL_MS_MAX)) {
+        if (errorOut) {
+          *errorOut = "invalid dwellMs";
+        }
+        Serial.println("restore: reject dwellMs");
+        return false;
+      }
+    }
+    if (pl.enabled && pl.slotMask == 0) {
+      if (errorOut) {
+        *errorOut = "playlist needs at least one slot";
+      }
+      Serial.println("restore: reject playlist mask");
+      return false;
+    }
+  }
+  if (!doc["timezoneId"].isNull()) {
+    char tz[TIMEZONE_ID_MAX + 1]{};
+    strlcpy(tz, doc["timezoneId"].as<const char *>(), sizeof(tz));
+    if (!timeSyncIsKnownTimezoneId(tz)) {
+      if (errorOut) {
+        *errorOut = "invalid timezone";
+      }
+      Serial.println("restore: reject timezone");
+      return false;
+    }
+  }
+  JsonArray arr = doc["presets"].as<JsonArray>();
+  if (!arr.isNull()) {
+    int i = 0;
+    for (JsonObject item : arr) {
+      if (i >= PRESET_COUNT) {
+        break;
+      }
+      SignPreset preset;
+      presetStore->get(i);  // defaults via copy below
+      preset = presetStore->get(i);
+      if (!jsonToPreset(item, preset)) {
+        if (errorOut) {
+          *errorOut = "invalid preset";
+        }
+        Serial.printf("restore: reject preset %d\n", i);
+        return false;
+      }
+      i++;
+    }
+  }
+  return true;
+}
+
+bool applyRestoreDoc(JsonObject doc) {
+  JsonArray arr = doc["presets"].as<JsonArray>();
+  if (!arr.isNull()) {
+    int i = 0;
+    for (JsonObject item : arr) {
+      if (i >= PRESET_COUNT) {
+        break;
+      }
+      SignPreset preset = presetStore->get(i);
+      jsonToPreset(item, preset);
+      if (!presetStore->set(i, preset)) {
+        return false;
+      }
+      i++;
+    }
+  }
+  if (doc["brightness"].is<int>()) {
+    displayEngine->setGlobalBrightness(static_cast<uint8_t>(doc["brightness"].as<int>()));
+  }
+  if (doc["displayOn"].is<bool>()) {
+    displayEngine->setDisplayOn(doc["displayOn"].as<bool>());
+  }
+  if (doc["playlistEnabled"].is<bool>() || doc["slotMask"].is<int>() ||
+      doc["playlistMask"].is<int>() || doc["dwellMs"].is<int>() ||
+      doc["playlistDwellMs"].is<int>()) {
+    PlaylistSettings playlist = presetStore->playlist();
+    if (doc["playlistEnabled"].is<bool>()) {
+      playlist.enabled = doc["playlistEnabled"].as<bool>();
+    }
+    if (doc["slotMask"].is<int>()) {
+      playlist.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
+    } else if (doc["playlistMask"].is<int>()) {
+      playlist.slotMask = static_cast<uint8_t>(doc["playlistMask"].as<int>() & 0xFF);
+    }
+    int dwell = 0;
+    if (doc["dwellMs"].is<int>()) {
+      dwell = doc["dwellMs"].as<int>();
+    } else if (doc["playlistDwellMs"].is<int>()) {
+      dwell = doc["playlistDwellMs"].as<int>();
+    }
+    if (dwell == 0) {
+      playlist.enabled = false;
+    } else if (dwell > 0) {
+      playlist.dwellMs = clampPlaylistDwellMs(dwell);
+    }
+    presetStore->setPlaylist(playlist);
+  }
+  if (!doc["timezoneId"].isNull()) {
+    char tz[TIMEZONE_ID_MAX + 1]{};
+    strlcpy(tz, doc["timezoneId"].as<const char *>(), sizeof(tz));
+    presetStore->setTimezoneId(tz);
+  }
+  if (doc["activeIndex"].is<int>()) {
+    const int idx = doc["activeIndex"].as<int>();
+    if (idx >= 0 && idx < PRESET_COUNT) {
+      presetStore->setActiveIndex(idx);
+    }
+  }
+  displayEngine->selectPreset(presetStore->activeIndex());
+  displayEngine->refreshTimeDisplay();
+  return true;
+}
+
+void appendDiagnostics(JsonObject obj) {
+  obj["free_heap"] = ESP.getFreeHeap();
+  obj["min_free_heap"] = ESP.getMinFreeHeap();
+  obj["uptime_ms"] = millis();
+  obj["reset_reason"] = espResetReasonString();
+  obj["wifi_mode"] = wifiManagerModeString();
+  obj["ap_enabled"] = wifiManagerApActive();
+  obj["ap_clients"] = wifiManagerApClientCount();
+  obj["recovery_mode"] = wifiManagerRecoveryMode() || displayEngine->recoveryMode();
+  obj["brownout_boot_clamp"] = displayEngine->brownoutBootClamp();
+  obj["brightness_cap_percent"] = PANEL_BRIGHTNESS_CAP_PERCENT;
+  obj["panel_brightness_effective"] = displayEngine->effectiveBrightnessPercent();
+  obj["firmware_version"] = otaUpdateVersion();
 }
 
 void releaseRequestBody(AsyncWebServerRequest *request) {
@@ -267,6 +514,7 @@ void sendPresetsJson(AsyncWebServerRequest *request) {
   appendTimeFields(root);
   appendFirmwareFields(root);
   appendWifiStatus(root);
+  appendDiagnostics(root);
 
   if (doc.overflowed()) {
     sendJsonResponse(request, 500, "{\"error\":\"json overflow\"}");
@@ -320,6 +568,26 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
     request->send_P(200, "text/html", WEB_UI_HTML);
   });
 
+
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AUTH(request);
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    appendDiagnostics(root);
+    appendWifiStatus(root);
+    root["sta_connected"] = wifiStaConnected();
+    if (wifiStaConnected()) {
+      root["sta_ssid"] = wifiStaSsid();
+      root["sta_ip"] = wifiStaIp();
+      root["sta_rssi"] = wifiStaRssi();
+    }
+    root["ap_ssid"] = wifiApSsid();
+    root["ap_ip"] = wifiApIp();
+    String body;
+    serializeJson(doc, body);
+    sendJsonResponse(request, 200, body);
+  });
+
   server.on("/api/effects", HTTP_GET, [](AsyncWebServerRequest *request) {
     AUTH(request);
     JsonDocument doc;
@@ -369,6 +637,9 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/brightness", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
+              if (index == 0 && rejectOversizedBody(request, total, HTTP_BODY_LIMIT_SMALL)) {
+                return;
+              }
               if (index + len != total) {
                 return;
               }
@@ -389,7 +660,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/display", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_SMALL);
               if (body == nullptr) {
                 return;
               }
@@ -417,7 +688,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on(AsyncURIMatcher::exact("/api/presets"), HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_SMALL);
               if (body == nullptr) {
                 return;
               }
@@ -466,6 +737,9 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
+              if (index == 0 && rejectOversizedBody(request, total, HTTP_BODY_LIMIT_SMALL)) {
+                return;
+              }
               if (index + len != total) {
                 return;
               }
@@ -489,7 +763,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/preview", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_SMALL);
               if (body == nullptr) {
                 return;
               }
@@ -543,6 +817,9 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/playlist", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
+              if (index == 0 && rejectOversizedBody(request, total, HTTP_BODY_LIMIT_SMALL)) {
+                return;
+              }
               if (index + len != total) {
                 return;
               }
@@ -551,24 +828,24 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
               }
-              PlaylistSettings playlist = presetStore->playlist();
-              if (doc["enabled"].is<bool>()) {
-                playlist.enabled = doc["enabled"];
+              PlaylistSettings out;
+              const char *errorMsg = nullptr;
+              PlaylistSettings currentPlaylist = presetStore->playlist();
+              if (!parsePlaylistUpdate(doc.as<JsonObject>(), currentPlaylist, out, &errorMsg)) {
+                String response = "{\"error\":\"";
+                response += errorMsg ? errorMsg : "invalid playlist";
+                response += "\"}";
+                request->send(400, "application/json", response);
+                return;
               }
-              if (doc["slotMask"].is<int>()) {
-                playlist.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
-              }
-              if (doc["dwellMs"].is<int>()) {
-                playlist.dwellMs = clampPlaylistDwellMs(doc["dwellMs"].as<int>());
-              }
-              presetStore->setPlaylist(playlist);
+              presetStore->setPlaylist(out);
               request->send(200, "application/json", "{\"ok\":true}");
             });
 
   server.on("/api/timezone", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_SMALL);
               if (body == nullptr) {
                 return;
               }
@@ -663,69 +940,30 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/restore", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_RESTORE);
               if (body == nullptr) {
                 return;
               }
               JsonDocument doc;
-              if (deserializeJson(doc, body->c_str(), body->length())) {
+              if (deserializeJson(doc, body->c_str(), body->length()) || doc.overflowed()) {
                 releaseRequestBody(request);
                 request->send(400, "application/json", "{\"error\":\"invalid json\"}");
                 return;
               }
-              if (doc["brightness"].is<int>()) {
-                displayEngine->setGlobalBrightness(
-                    static_cast<uint8_t>(doc["brightness"].as<int>()));
+              const char *errorMsg = nullptr;
+              if (!validateRestoreDoc(doc.as<JsonObject>(), &errorMsg)) {
+                releaseRequestBody(request);
+                String response = "{\"error\":\"";
+                response += errorMsg ? errorMsg : "invalid restore";
+                response += "\"}";
+                request->send(400, "application/json", response);
+                return;
               }
-              if (doc["displayOn"].is<bool>()) {
-                displayEngine->setDisplayOn(doc["displayOn"].as<bool>());
+              if (!applyRestoreDoc(doc.as<JsonObject>())) {
+                releaseRequestBody(request);
+                request->send(500, "application/json", "{\"error\":\"restore failed\"}");
+                return;
               }
-              if (doc["playlistEnabled"].is<bool>() || doc["slotMask"].is<int>() ||
-                  doc["dwellMs"].is<int>() || doc["playlistDwellMs"].is<int>()) {
-                PlaylistSettings playlist = presetStore->playlist();
-                if (doc["playlistEnabled"].is<bool>()) {
-                  playlist.enabled = doc["playlistEnabled"];
-                }
-                if (doc["slotMask"].is<int>()) {
-                  playlist.slotMask = static_cast<uint8_t>(doc["slotMask"].as<int>() & 0xFF);
-                }
-                int dwell = 0;
-                if (doc["dwellMs"].is<int>()) {
-                  dwell = doc["dwellMs"].as<int>();
-                } else if (doc["playlistDwellMs"].is<int>()) {
-                  dwell = doc["playlistDwellMs"].as<int>();
-                }
-                if (dwell > 0) {
-                  playlist.dwellMs = clampPlaylistDwellMs(dwell);
-                }
-                presetStore->setPlaylist(playlist);
-              }
-              if (!doc["timezoneId"].isNull()) {
-                char tz[TIMEZONE_ID_MAX + 1]{};
-                strlcpy(tz, doc["timezoneId"].as<const char *>(), sizeof(tz));
-                if (timeSyncIsKnownTimezoneId(tz)) {
-                  presetStore->setTimezoneId(tz);
-                }
-              }
-              JsonArray arr = doc["presets"].as<JsonArray>();
-              if (!arr.isNull()) {
-                int i = 0;
-                for (JsonObject item : arr) {
-                  if (i >= PRESET_COUNT) {
-                    break;
-                  }
-                  SignPreset preset = presetStore->get(i);
-                  jsonToPreset(item, preset);
-                  if (!presetStore->set(i, preset)) {
-                    releaseRequestBody(request);
-                    request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
-                    return;
-                  }
-                  i++;
-                }
-              }
-              displayEngine->selectPreset(presetStore->activeIndex());
-              displayEngine->refreshTimeDisplay();
               releaseRequestBody(request);
               request->send(200, "application/json", "{\"ok\":true}");
             });
@@ -785,23 +1023,37 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
       HTTP_POST,
       [](AsyncWebServerRequest *request) {
         AUTH(request);
-        if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {
+        const int presetId = uploadPresetId;
+        const size_t bytes = uploadTotalBytes;
+        resetGifUploadState();
+
+        if (presetId < 0 || presetId >= PRESET_COUNT) {
+          Serial.println("gif: reject invalid preset id");
           request->send(400, "application/json", "{\"error\":\"invalid preset id\"}");
           return;
         }
-        if (uploadTotalBytes > MAX_GIF_BYTES) {
-          const String path = presetStore->gifPathForSlot(uploadPresetId);
+        const String path = presetStore->gifPathForSlot(presetId);
+        if (bytes < GIF_MIN_BYTES || bytes > MAX_GIF_BYTES) {
           if (LittleFS.exists(path)) {
             LittleFS.remove(path);
           }
-          request->send(413, "application/json", "{\"error\":\"gif too large (max 256KB)\"}");
+          Serial.printf("gif: reject size %u\n", static_cast<unsigned>(bytes));
+          request->send(bytes > MAX_GIF_BYTES ? 413 : 400, "application/json",
+                        bytes > MAX_GIF_BYTES ? "{\"error\":\"gif too large (max 256KB)\"}"
+                                              : "{\"error\":\"invalid gif\"}");
           return;
         }
-        SignPreset preset = presetStore->get(uploadPresetId);
-        const String path = presetStore->gifPathForSlot(uploadPresetId);
+        if (!gifPlayerValidate(path.c_str())) {
+          LittleFS.remove(path);
+          Serial.println("gif: reject invalid file");
+          request->send(400, "application/json", "{\"error\":\"invalid gif\"}");
+          return;
+        }
+        SignPreset preset = presetStore->get(presetId);
         path.toCharArray(preset.gifPath, sizeof(preset.gifPath));
         preset.contentType = ContentType::Gif;
-        if (!displayEngine->applyPreset(preset, uploadPresetId)) {
+        if (!displayEngine->applyPreset(preset, presetId)) {
+          LittleFS.remove(path);
           request->send(500, "application/json", "{\"error\":\"preset save failed\"}");
           return;
         }
@@ -811,9 +1063,14 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
          bool final) {
         if (index == 0) {
           AUTH_BODY(request, index);
+          resetGifUploadState();
           uploadPresetId = request->hasParam("id") ? request->getParam("id")->value().toInt() : -1;
-          uploadTotalBytes = 0;
           if (uploadPresetId < 0 || uploadPresetId >= PRESET_COUNT) {
+            return;
+          }
+          if (len < 6 || !gifPlayerIsGifHeader(data, len)) {
+            Serial.println("gif: reject header");
+            resetGifUploadState();
             return;
           }
           const String path = presetStore->gifPathForSlot(uploadPresetId);
@@ -823,7 +1080,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
           uploadFile = LittleFS.open(path, "w");
         }
 
-        if (!uploadFile) {
+        if (!uploadFile || uploadPresetId < 0) {
           return;
         }
 
@@ -832,6 +1089,8 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
           uploadFile.close();
           const String path = presetStore->gifPathForSlot(uploadPresetId);
           LittleFS.remove(path);
+          resetGifUploadState();
+          Serial.println("gif: reject oversize during upload");
           return;
         }
 
@@ -885,7 +1144,7 @@ void webServerBegin(DisplayEngine &engine, PresetStore &store) {
   server.on("/api/firmware/upgrade", HTTP_POST, [](AsyncWebServerRequest *request) {}, nullptr,
             [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
               AUTH_BODY(request, index);
-              String *body = accumulateRequestBody(request, data, len, index, total);
+              String *body = accumulateRequestBody(request, data, len, index, total, HTTP_BODY_LIMIT_SMALL);
               if (body == nullptr) {
                 return;
               }

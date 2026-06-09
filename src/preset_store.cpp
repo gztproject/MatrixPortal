@@ -275,6 +275,10 @@ void PresetStore::loadAll() {
   playlist_.enabled = prefs.getBool("plOn", false);
   playlist_.slotMask = prefs.getUChar("plMask", 0xFF);
   playlist_.dwellMs = clampPlaylistDwellMs(prefs.getUInt("plDwell", PLAYLIST_DWELL_MS_DEFAULT));
+  if (playlist_.enabled && playlist_.slotMask == 0) {
+    Serial.println("playlist: legacy enabled with empty mask — disabled");
+    playlist_.enabled = false;
+  }
   displayOn_ = prefs.getBool("dispOn", true);
   if (prefs.isKey("tzId")) {
     String tz = prefs.getString("tzId", timezoneId_);

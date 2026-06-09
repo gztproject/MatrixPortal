@@ -1,5 +1,7 @@
 #include "gif_player.h"
 
+#include <cstring>
+
 #include "panel_profile.h"
 
 #include <AnimatedGIF.h>
@@ -113,6 +115,31 @@ bool gifPlayerBegin(VirtualMatrixPanel *virtualPanel) {
 void gifPlayerEnd() {
   gifPlayerClose();
   panel = nullptr;
+}
+
+
+bool gifPlayerIsGifHeader(const uint8_t *data, size_t len) {
+  if (!data || len < 6) {
+    return false;
+  }
+  return memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0;
+}
+
+bool gifPlayerValidate(const char *path) {
+  if (!path || path[0] == '\0' || !LittleFS.exists(path)) {
+    return false;
+  }
+  if (!gif.open(path, GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
+    return false;
+  }
+  const int w = gif.getCanvasWidth();
+  const int h = gif.getCanvasHeight();
+  gif.close();
+  gifIsOpen = false;
+  if (gifFile) {
+    gifFile.close();
+  }
+  return w > 0 && h > 0 && w <= 208 && h <= 104;
 }
 
 bool gifPlayerFileExists(const char *path) {

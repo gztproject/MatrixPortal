@@ -10,3 +10,5 @@ void gifPlayerClose();
 bool gifPlayerIsOpen();
 bool gifPlayerTick();
 bool gifPlayerFileExists(const char *path);
+bool gifPlayerValidate(const char *path);
+bool gifPlayerIsGifHeader(const uint8_t *data, size_t len);

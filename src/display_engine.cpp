@@ -1,5 +1,7 @@
 #include "display_engine.h"
 
+#include "limits_config.h"
+#include "wifi_config.h"
 #include "effect_renderer.h"
 #include "gif_player.h"
 #include "panel_profile.h"
@@ -161,6 +163,10 @@ void DisplayEngine::setGlobalBrightness(uint8_t percent) {
   if (!store_) {
     return;
   }
+  if (brownoutBootClamp_ && percent > BROWNOUT_BOOT_BRIGHTNESS_PERCENT) {
+    brownoutBootClamp_ = false;
+    Serial.println("brightness: brownout clamp released by user");
+  }
   store_->setGlobalBrightness(percent);
   if (store_->displayOn()) {
     applyBrightness(store_->globalBrightness());
@@ -317,11 +323,68 @@ bool DisplayEngine::shouldPlayGif(const SignPreset &preset) const {
   return gifPlayerFileExists(preset.gifPath);
 }
 
+uint8_t DisplayEngine::effectiveBrightnessPercent() const {
+  if (!store_) {
+    return 0;
+  }
+  uint8_t effective = store_->globalBrightness();
+  if (effective > PANEL_BRIGHTNESS_CAP_PERCENT) {
+    effective = PANEL_BRIGHTNESS_CAP_PERCENT;
+  }
+  if (brownoutBootClamp_ && effective > BROWNOUT_BOOT_BRIGHTNESS_PERCENT) {
+    effective = BROWNOUT_BOOT_BRIGHTNESS_PERCENT;
+  }
+  return effective;
+}
+
+void DisplayEngine::setBrownoutBootClamp(bool enabled) {
+  DisplayLock lock;
+  brownoutBootClamp_ = enabled;
+  if (store_ && store_->displayOn()) {
+    applyBrightness(store_->globalBrightness());
+  }
+}
+
+void DisplayEngine::beginRecoveryMode(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma,
+                                      PresetStore *store) {
+  if (engineMutex == nullptr) {
+    engineMutex = xSemaphoreCreateRecursiveMutex();
+  }
+  DisplayLock lock;
+  panel_ = panel;
+  dma_ = dma;
+  store_ = store;
+  recoveryMode_ = true;
+  gifPlayerBegin(panel_);
+  effectRendererBegin(panel_);
+  playlistSlotSinceMs_ = millis();
+
+  runtime_ = normalizePreset(store_->get(0));
+  strncpy(runtime_.message, "RECOVERY", sizeof(runtime_.message));
+  runtime_.message[sizeof(runtime_.message) - 1] = '\0';
+  runtime_.scroll = false;
+  runtime_.rowCount = 1;
+  activeContentType_ = ContentType::Text;
+  gifPlayerClose();
+  dirty_ = true;
+  applyBrightness(MATRIXSIGN_RECOVERY_BRIGHTNESS);
+  redrawTextBlock();
+}
+
 void DisplayEngine::applyBrightness(uint8_t brightnessPercent) {
   if (!dma_) {
     return;
   }
-  const uint8_t level = (255U * brightnessPercent) / 100U;
+  uint8_t effective = brightnessPercent;
+  if (store_ && store_->displayOn() && !recoveryMode_) {
+    if (effective > PANEL_BRIGHTNESS_CAP_PERCENT) {
+      effective = PANEL_BRIGHTNESS_CAP_PERCENT;
+    }
+    if (brownoutBootClamp_ && effective > BROWNOUT_BOOT_BRIGHTNESS_PERCENT) {
+      effective = BROWNOUT_BOOT_BRIGHTNESS_PERCENT;
+    }
+  }
+  const uint8_t level = (255U * effective) / 100U;
   dma_->setBrightness8(level);
 }
 
@@ -613,6 +676,29 @@ void DisplayEngine::refreshTimeDisplay() {
   }
 }
 
+bool DisplayEngine::playlistSlotPlayable(int index) const {
+  if (!store_ || index < 0 || index >= PRESET_COUNT) {
+    return false;
+  }
+  if ((store_->playlist().slotMask & (1 << index)) == 0) {
+    return false;
+  }
+  const SignPreset preset = store_->get(index);
+  if (preset.contentType == ContentType::Gif) {
+    return gifPlayerFileExists(preset.gifPath);
+  }
+  return true;
+}
+
+int DisplayEngine::firstPlayablePlaylistSlot() const {
+  for (int i = 0; i < PRESET_COUNT; i++) {
+    if (playlistSlotPlayable(i)) {
+      return i;
+    }
+  }
+  return 0;
+}
+
 int DisplayEngine::nextPlaylistSlot(int current) const {
   if (!store_) {
     return current;
@@ -624,15 +710,15 @@ int DisplayEngine::nextPlaylistSlot(int current) const {
 
   for (int step = 1; step <= PRESET_COUNT; step++) {
     const int candidate = (current + step) % PRESET_COUNT;
-    if ((playlist.slotMask & (1 << candidate)) != 0) {
+    if (playlistSlotPlayable(candidate)) {
       return candidate;
     }
   }
-  return current;
+  return firstPlayablePlaylistSlot();
 }
 
 void DisplayEngine::tickPlaylist() {
-  if (!store_) {
+  if (!store_ || recoveryMode_) {
     return;
   }
 
@@ -641,18 +727,26 @@ void DisplayEngine::tickPlaylist() {
     return;
   }
 
-  int enabledCount = 0;
-  for (int i = 0; i < PRESET_COUNT; i++) {
-    if (playlist.slotMask & (1 << i)) {
-      enabledCount++;
+  if (playlist.slotMask == 0) {
+    if (!playlistEmptyMaskLogged_) {
+      playlistEmptyMaskLogged_ = true;
+      Serial.println("playlist: enabled but no slots selected");
     }
-  }
-  if (enabledCount <= 1) {
     return;
   }
 
-  if ((playlist.slotMask & (1 << activeIndex())) == 0) {
-    selectPreset(nextPlaylistSlot(activeIndex() - 1));
+  int playableCount = 0;
+  for (int i = 0; i < PRESET_COUNT; i++) {
+    if (playlistSlotPlayable(i)) {
+      playableCount++;
+    }
+  }
+  if (playableCount <= 1) {
+    return;
+  }
+
+  if (!playlistSlotPlayable(activeIndex())) {
+    selectPreset(firstPlayablePlaylistSlot());
     return;
   }
 

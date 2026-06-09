@@ -9,6 +9,12 @@
 class DisplayEngine {
  public:
   void begin(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store);
+  void beginRecoveryMode(VirtualMatrixPanel *panel, MatrixPanel_I2S_DMA *dma, PresetStore *store);
+  void setBrownoutBootClamp(bool enabled);
+  bool recoveryMode() const { return recoveryMode_; }
+  bool brownoutBootClamp() const { return brownoutBootClamp_; }
+  uint8_t effectiveBrightnessPercent() const;
+
   PresetStore *store() { return store_; }
 
   int activeIndex() const;
@@ -58,6 +64,8 @@ class DisplayEngine {
   void tickPlaylist();
   bool shouldPlayGif(const SignPreset &preset) const;
   int nextPlaylistSlot(int current) const;
+  bool playlistSlotPlayable(int index) const;
+  int firstPlayablePlaylistSlot() const;
 
   VirtualMatrixPanel *panel_ = nullptr;
   MatrixPanel_I2S_DMA *dma_ = nullptr;
@@ -74,4 +82,7 @@ class DisplayEngine {
   unsigned long countdownStartedMs_ = 0;
   unsigned long playlistSlotSinceMs_ = 0;
   bool dirty_ = true;
+  bool recoveryMode_ = false;
+  bool brownoutBootClamp_ = false;
+  bool playlistEmptyMaskLogged_ = false;
 };

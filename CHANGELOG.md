@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.9 — 2026-06-08
+
+### Added
+
+- **Wi‑Fi:** STA-first boot (~15 s), AP fallback with MAC-suffixed SSID (`MatrixSign-XXXX`), STA-loss retry (~120 s) before AP, captive DNS on AP
+- **Safe mode:** both buttons at power-on → AP + web UI before panel init; recovery screen, no GIF/playlist
+- **Onboard NeoPixel** Wi‑Fi status (yellow/green/red blink/solid patterns; GPIO 4)
+- **`GET /api/status`** — heap, uptime, Wi‑Fi mode, recovery/brownout flags
+- **Robustness:** HTTP body limits (8 kB / 16 kB restore), GIF upload validation, optional panel brightness cap (`PANEL_BRIGHTNESS_CAP_PERCENT`, default **100%**), brownout boot dim (10%), playlist hardening (1 s dwell min), atomic config restore validation
+- **`wifi_config.h`**, **`limits_config.h`**, **`status_led`**
+
+### Changed
+
+- Boot STA failure switches to AP-only **without** clearing saved credentials
+- Playlist off via checkbox or `dwellMs: 0`; minimum dwell **1 s**
+- AP turns off when STA is connected (no concurrent AP+STA)
+- Brownout brightness clamp (10%) clears when user raises brightness above 10% (Web UI or buttons; no reboot)
+
+## v0.2.8 — 2026-06-08
+
+### Changed
+
+- Stable AP-first Wi‑Fi with captive portal redirects for Android/Windows connectivity checks
+
 ## v0.2.7 — 2026-06-07
 
 ### Fixed

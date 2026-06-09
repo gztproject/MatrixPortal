@@ -75,6 +75,20 @@ void pollButton(int pin, int &lastState, unsigned long &lastMs, int presetDelta,
 }
 }  // namespace
 
+
+bool buttonInputRecoveryHeldAtBoot() {
+  pinMode(kPinUp, INPUT_PULLUP);
+  pinMode(kPinDown, INPUT_PULLUP);
+  const unsigned long deadline = millis() + 200;
+  while (millis() < deadline) {
+    if (digitalRead(kPinUp) != LOW || digitalRead(kPinDown) != LOW) {
+      return false;
+    }
+    delay(10);
+  }
+  return digitalRead(kPinUp) == LOW && digitalRead(kPinDown) == LOW;
+}
+
 void buttonInputBegin(DisplayEngine *displayEngine, PresetChangeCallback callback,
                       void *callbackContext) {
   engine = displayEngine;

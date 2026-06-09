@@ -87,9 +87,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 <section id="playlistSection">
 <label class="row"><input type="checkbox" id="playlistEnabled"> Auto-rotate presets</label>
+<p class="hint">Uncheck to stop rotation. Slot buttons choose which presets rotate when on.</p>
 <p class="hint">Cycles checked slots on the panel. Short press UP/DOWN switches presets; hold both to toggle display; hold one for brightness.</p>
 <label>Dwell time (seconds)</label>
-<input type="number" id="playlistDwell" min="2" max="3600" value="8">
+<input type="number" id="playlistDwell" min="1" max="3600" value="8">
 <div class="seg" id="playlistSlots"></div>
 <button type="button" class="action-btn" id="savePlaylist">Save playlist</button>
 </section>
@@ -762,7 +763,7 @@ function renderPlaylist(){
     el.appendChild(b);
   }
   $("playlistEnabled").checked=playlistEnabled;
-  $("playlistDwell").value=Math.max(2,Math.round(playlistDwellMs/1000));
+  $("playlistDwell").value=Math.max(1,Math.round(playlistDwellMs/1000));
 }
 
 function updateTimeStatus(data){
@@ -1200,9 +1201,9 @@ async function savePlaylist(){
   setBusy(true);
   try{
     const dwellSec=parseInt($("playlistDwell").value,10)||8;
-    await apiJson("/api/playlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:$("playlistEnabled").checked,slotMask:playlistMask,dwellMs:Math.max(2000,dwellSec*1000)})});
+    await apiJson("/api/playlist",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:$("playlistEnabled").checked,slotMask:playlistMask,dwellMs:Math.max(1000,dwellSec*1000)})});
     playlistEnabled=$("playlistEnabled").checked;
-    playlistDwellMs=Math.max(2000,dwellSec*1000);
+    playlistDwellMs=Math.max(1000,dwellSec*1000);
     showToast("Playlist saved");
   }catch(e){showToast(e.message,true);}
   setBusy(false);
